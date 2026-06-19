@@ -1,0 +1,15 @@
+node_modules/
+.expo/
+android/
+ios/
+dist/
+build/
+web-build/
+.DS_Store
+*.log
+.secrets/
+json.json
+*firebase-adminsdk*.json
+GoogleService-Info.plist
+.env
+.env.*

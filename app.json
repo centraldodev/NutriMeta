@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "NutriMeta",
+    "slug": "nutrimeta",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "nutrimeta",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "O NutriMeta usa reconhecimento de voz para adicionar refeições por fala.",
+        "NSMicrophoneUsageDescription": "O NutriMeta usa o microfone para registrar refeições por voz."
+      }
+    },
+    "android": {
+      "package": "com.n2ilva.nutrimeta",
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "extra": {
+      "firebaseApiKey": "AIzaSyCEIY0Qd41LwKDeP_XQTPLu57jqcAoo244",
+      "firebaseAuthDomain": "nutrimeta-df003.firebaseapp.com",
+      "firebaseProjectId": "nutrimeta-df003",
+      "firebaseStorageBucket": "nutrimeta-df003.firebasestorage.app",
+      "firebaseMessagingSenderId": "273605316772",
+      "firebaseAppId": "1:273605316772:android:5e688953c6dc5c1bab5631",
+      "googleWebClientId": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com",
+      "googleAndroidClientId": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com"
+    },
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Permita que o NutriMeta use o microfone para registrar refeições por voz.",
+          "speechRecognitionPermission": "Permita que o NutriMeta reconheça sua fala para registrar refeições.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Permita que o NutriMeta acesse suas fotos para escolher uma imagem de perfil."
+        }
+      ],
+      "expo-web-browser"
+    ]
+  }
+}

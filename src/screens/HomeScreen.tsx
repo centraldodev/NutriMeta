@@ -1,0 +1,854 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  Image,
+  Linking,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import Svg, { Circle } from 'react-native-svg';
+import { MaterialIcons } from '@expo/vector-icons';
+
+import { Colors, MacroColors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
+import { isFirebaseConfigured } from '../config';
+import { saveUserProfile, signOut } from '../services/authService';
+import { clearSession } from '../services/sessionStorage';
+import { useStore, selectGoals, selectTodayLog } from '../store';
+import { calcMacroGoals, formatKcal, formatGrams, macroPercent } from '../utils/nutrition';
+import {
+  buildValidatedProfileValues,
+  formatHeightInput,
+  formatWeightInput,
+  maskAgeInput,
+  maskHeightInput,
+  maskNameInput,
+  maskWeightInput,
+  parseProfileNumber,
+  validateProfileBasics,
+} from '../utils/profileValidation';
+import { ActivityLevel, BiologicalSex, FoodNutrition, GoalType, MacroGoals, UserProfile } from '../types';
+
+const RING_SIZE = 160;
+const RING_STROKE = 14;
+const RING_R = (RING_SIZE - RING_STROKE) / 2;
+const CIRCUMFERENCE = 2 * Math.PI * RING_R;
+
+const DEFAULT_GOALS: MacroGoals = {
+  kcal: 2000,
+  protein: 150,
+  carbs: 200,
+  fat: 65,
+  fiber: 25,
+  water: 2500,
+  sugar: 50,
+  sodium: 2300,
+};
+
+function RingChart({ pct, color }: { pct: number; color: string }) {
+  const dash = (pct / 100) * CIRCUMFERENCE;
+  return (
+    <Svg width={RING_SIZE} height={RING_SIZE}>
+      <Circle
+        cx={RING_SIZE / 2}
+        cy={RING_SIZE / 2}
+        r={RING_R}
+        stroke={Colors.gray50}
+        strokeWidth={RING_STROKE}
+        fill="none"
+      />
+      <Circle
+        cx={RING_SIZE / 2}
+        cy={RING_SIZE / 2}
+        r={RING_R}
+        stroke={color}
+        strokeWidth={RING_STROKE}
+        fill="none"
+        strokeDasharray={`${dash} ${CIRCUMFERENCE}`}
+        strokeLinecap="round"
+        rotation="-90"
+        origin={`${RING_SIZE / 2}, ${RING_SIZE / 2}`}
+      />
+    </Svg>
+  );
+}
+
+function NutritionCard({
+  label,
+  emoji,
+  current,
+  goal,
+  unit,
+  color,
+  mode = 'target',
+}: {
+  label: string;
+  emoji: string;
+  current: number;
+  goal: number;
+  unit: string;
+  color: string;
+  mode?: 'target' | 'limit';
+}) {
+  const pct = macroPercent(current, goal);
+  const overLimit = mode === 'limit' && current > goal;
+  const done = mode === 'target' ? pct >= 95 : current > 0 && current <= goal;
+  const displayColor = overLimit ? Colors.danger : color;
+
+  return (
+    <View style={[styles.macroCard, (done || overLimit) && { borderColor: displayColor }]}>
+      <View style={styles.macroCardTop}>
+        <Text style={styles.macroLabel}>{emoji} {label}</Text>
+        <Text style={[styles.macroPct, { color: displayColor }]}>{pct}%</Text>
+      </View>
+      <Text style={[styles.macroVal, { color: displayColor }]}>
+        {Math.round(current)}{unit}
+      </Text>
+      <Text style={styles.macroGoal}>
+        {mode === 'limit' ? 'limite' : 'meta'}: {Math.round(goal)}{unit}
+      </Text>
+      <View style={styles.macroBarBg}>
+        <View style={[styles.macroBarFill, { width: `${pct}%`, backgroundColor: displayColor }]} />
+      </View>
+      {overLimit && <Text style={[styles.doneBadge, { color: Colors.danger }]}>Acima do limite</Text>}
+      {done && !overLimit && <Text style={[styles.doneBadge, { color: displayColor }]}>Dentro da meta</Text>}
+    </View>
+  );
+}
+
+function MealItem({ emoji, name, nutrition }: {
+  emoji: string;
+  name: string;
+  time: string;
+  nutrition: FoodNutrition;
+}) {
+  return (
+    <View style={styles.mealItem}>
+      <Text style={styles.mealEmoji}>{emoji}</Text>
+      <View style={styles.mealInfo}>
+        <Text style={styles.mealName}>{name}</Text>
+        <Text style={styles.mealMacros}>
+          P:{Math.round(nutrition.protein)}g · C:{Math.round(nutrition.carbs)}g · G:{Math.round(nutrition.fat)}g · Fib:{Math.round(nutrition.fiber)}g
+        </Text>
+      </View>
+      <Text style={styles.mealKcal}>{Math.round(nutrition.kcal)} kcal</Text>
+    </View>
+  );
+}
+
+function parseNumber(value: string, fallback: number) {
+  return parseProfileNumber(value, fallback);
+}
+
+function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  const user = useStore((s) => s.user);
+  const profile = useStore((s) => s.profile);
+  const goals = useStore(selectGoals);
+  const setUser = useStore((s) => s.setUser);
+  const setProfile = useStore((s) => s.setProfile);
+  const setGoals = useStore((s) => s.setGoals);
+
+  const [name, setName] = useState('');
+  const [age, setAge] = useState('');
+  const [weight, setWeight] = useState('');
+  const [height, setHeight] = useState('');
+  const [sex, setSex] = useState<BiologicalSex>('M');
+  const [goalType, setGoalType] = useState<GoalType>('maintain');
+  const [activity, setActivity] = useState<ActivityLevel>(1.55);
+  const [avatarUrl, setAvatarUrl] = useState<string | undefined>();
+  const [goalInputs, setGoalInputs] = useState<Record<keyof MacroGoals, string>>({
+    kcal: '',
+    protein: '',
+    carbs: '',
+    fat: '',
+    fiber: '',
+    water: '',
+    sugar: '',
+    sodium: '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    const activeGoals = { ...DEFAULT_GOALS, ...(goals ?? {}) };
+    setName(profile?.name ?? user?.name ?? '');
+    setAge(String(profile?.age ?? ''));
+    setWeight(formatWeightInput(profile?.weight));
+    setHeight(formatHeightInput(profile?.height));
+    setSex(profile?.sex ?? 'M');
+    setGoalType(profile?.goal ?? 'maintain');
+    setActivity(profile?.activityLevel ?? 1.55);
+    setAvatarUrl(user?.avatarUrl);
+    setGoalInputs({
+      kcal: String(activeGoals.kcal),
+      protein: String(activeGoals.protein),
+      carbs: String(activeGoals.carbs),
+      fat: String(activeGoals.fat),
+      fiber: String(activeGoals.fiber),
+      water: String(activeGoals.water),
+      sugar: String(activeGoals.sugar),
+      sodium: String(activeGoals.sodium),
+    });
+  }, [visible, goals, profile, user]);
+
+  function updateGoalInput(key: keyof MacroGoals, value: string) {
+    setGoalInputs((current) => ({ ...current, [key]: value }));
+  }
+
+  function buildProfile(): UserProfile | null {
+    if (!user) return null;
+    const error = validateProfileBasics({ name, age, weight, height });
+    if (error) {
+      Alert.alert('Confira seus dados', error);
+      return null;
+    }
+    const profileValues = buildValidatedProfileValues({ age, weight, height, fallback: profile ?? undefined });
+    const nextProfile: UserProfile = {
+      userId: user.id,
+      name: name.trim() || user.name,
+      age: profileValues.age,
+      weight: profileValues.weight,
+      height: profileValues.height,
+      sex,
+      goal: goalType,
+      activityLevel: activity,
+      onboardingComplete: true,
+      groupIds: profile?.groupIds ?? [],
+      createdAt: profile?.createdAt ?? new Date(),
+      updatedAt: new Date(),
+    };
+    return nextProfile;
+  }
+
+  function handleRecalculateGoals() {
+    const nextProfile = buildProfile();
+    if (!nextProfile) return;
+    const calculated = calcMacroGoals(nextProfile);
+    setGoalInputs({
+      kcal: String(calculated.kcal),
+      protein: String(calculated.protein),
+      carbs: String(calculated.carbs),
+      fat: String(calculated.fat),
+      fiber: String(calculated.fiber),
+      water: String(calculated.water),
+      sugar: String(calculated.sugar),
+      sodium: String(calculated.sodium),
+    });
+  }
+
+  async function handlePickPhoto() {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permissão necessária', 'Autorize o acesso às fotos para escolher uma imagem de perfil.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.75,
+    });
+
+    if (!result.canceled) {
+      setAvatarUrl(result.assets[0]?.uri);
+    }
+  }
+
+  async function handleSave() {
+    if (!user) return;
+    const nextProfile = buildProfile();
+    if (!nextProfile) return;
+
+    const nextGoals: MacroGoals = {
+      kcal: Math.round(parseNumber(goalInputs.kcal, DEFAULT_GOALS.kcal)),
+      protein: Math.round(parseNumber(goalInputs.protein, DEFAULT_GOALS.protein)),
+      carbs: Math.round(parseNumber(goalInputs.carbs, DEFAULT_GOALS.carbs)),
+      fat: Math.round(parseNumber(goalInputs.fat, DEFAULT_GOALS.fat)),
+      fiber: Math.round(parseNumber(goalInputs.fiber, DEFAULT_GOALS.fiber)),
+      water: Math.round(parseNumber(goalInputs.water, DEFAULT_GOALS.water)),
+      sugar: Math.round(parseNumber(goalInputs.sugar, DEFAULT_GOALS.sugar)),
+      sodium: Math.round(parseNumber(goalInputs.sodium, DEFAULT_GOALS.sodium)),
+    };
+
+    setSaving(true);
+    try {
+      if (isFirebaseConfigured && user.id !== 'dev_user') {
+        await saveUserProfile(nextProfile);
+      }
+      setProfile(nextProfile);
+      setGoals(nextGoals);
+      setUser({ ...user, name: nextProfile.name, avatarUrl });
+      onClose();
+    } catch {
+      Alert.alert('Erro', 'Não foi possível salvar as configurações.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={modalStyles.bg}>
+        <TouchableOpacity style={modalStyles.backdrop} onPress={onClose} />
+        <View style={modalStyles.sheet}>
+          <View style={modalStyles.handle} />
+          <View style={modalStyles.header}>
+            <Text style={modalStyles.title}>Configurações</Text>
+            <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn}>
+              <MaterialIcons name="close" size={20} color={Colors.gray600} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={modalStyles.scroll}>
+            <View style={modalStyles.photoRow}>
+              <TouchableOpacity style={modalStyles.photoButton} onPress={handlePickPhoto}>
+                {avatarUrl ? (
+                  <Image source={{ uri: avatarUrl }} style={modalStyles.photo} />
+                ) : (
+                  <Text style={modalStyles.photoInitials}>
+                    {(name || user?.name || 'U').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
+                  </Text>
+                )}
+              </TouchableOpacity>
+              <View style={modalStyles.photoInfo}>
+                <Text style={modalStyles.sectionTitle}>Foto de perfil</Text>
+                <Text style={modalStyles.sectionHint}>Toque no círculo para escolher uma imagem.</Text>
+              </View>
+            </View>
+
+            <Text style={modalStyles.sectionTitle}>Dados do corpo</Text>
+            <View style={modalStyles.fieldGrid}>
+              <Field label="Nome" value={name} onChangeText={(v) => setName(maskNameInput(v))} />
+              <Field label="Idade" value={age} onChangeText={(v) => setAge(maskAgeInput(v))} keyboardType="numeric" maxLength={3} placeholder="28" />
+              <Field label="Peso (kg)" value={weight} onChangeText={(v) => setWeight(maskWeightInput(v))} keyboardType="decimal-pad" placeholder="85,5" />
+              <Field label="Altura (m)" value={height} onChangeText={(v) => setHeight(maskHeightInput(v))} keyboardType="numeric" maxLength={4} placeholder="1,85" />
+            </View>
+
+            <Text style={modalStyles.label}>Sexo biológico</Text>
+            <View style={modalStyles.segmentRow}>
+              {(['M', 'F'] as BiologicalSex[]).map((item) => (
+                <TouchableOpacity
+                  key={item}
+                  style={[modalStyles.segment, sex === item && modalStyles.segmentActive]}
+                  onPress={() => setSex(item)}
+                >
+                  <Text style={[modalStyles.segmentText, sex === item && modalStyles.segmentTextActive]}>
+                    {item === 'M' ? 'Masculino' : 'Feminino'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={modalStyles.label}>Objetivo</Text>
+            <View style={modalStyles.segmentWrap}>
+              {[
+                ['deficit', 'Emagrecer'],
+                ['maintain', 'Manter'],
+                ['muscle', 'Massa'],
+                ['bulk', 'Volume'],
+              ].map(([value, label]) => (
+                <TouchableOpacity
+                  key={value}
+                  style={[modalStyles.pill, goalType === value && modalStyles.pillActive]}
+                  onPress={() => setGoalType(value as GoalType)}
+                >
+                  <Text style={[modalStyles.pillText, goalType === value && modalStyles.pillTextActive]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={modalStyles.label}>Atividade</Text>
+            <View style={modalStyles.segmentWrap}>
+              {[
+                [1.2, 'Sedentário'],
+                [1.375, 'Leve'],
+                [1.55, 'Moderado'],
+                [1.725, 'Intenso'],
+                [1.9, 'Atleta'],
+              ].map(([value, label]) => (
+                <TouchableOpacity
+                  key={String(value)}
+                  style={[modalStyles.pill, activity === value && modalStyles.pillActive]}
+                  onPress={() => setActivity(value as ActivityLevel)}
+                >
+                  <Text style={[modalStyles.pillText, activity === value && modalStyles.pillTextActive]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={modalStyles.sectionHeaderRow}>
+              <View>
+                <Text style={modalStyles.sectionTitle}>Metas nutricionais</Text>
+                <Text style={modalStyles.sectionHint}>Edite manualmente ou recalcule pelos dados acima.</Text>
+              </View>
+              <TouchableOpacity style={modalStyles.recalcBtn} onPress={handleRecalculateGoals}>
+                <Text style={modalStyles.recalcText}>Recalcular</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={modalStyles.fieldGrid}>
+              <Field label="Calorias" value={goalInputs.kcal} onChangeText={(v) => updateGoalInput('kcal', v)} keyboardType="numeric" suffix="kcal" />
+              <Field label="Proteína" value={goalInputs.protein} onChangeText={(v) => updateGoalInput('protein', v)} keyboardType="numeric" suffix="g" />
+              <Field label="Carboidratos" value={goalInputs.carbs} onChangeText={(v) => updateGoalInput('carbs', v)} keyboardType="numeric" suffix="g" />
+              <Field label="Gorduras" value={goalInputs.fat} onChangeText={(v) => updateGoalInput('fat', v)} keyboardType="numeric" suffix="g" />
+              <Field label="Fibras" value={goalInputs.fiber} onChangeText={(v) => updateGoalInput('fiber', v)} keyboardType="numeric" suffix="g" />
+              <Field label="Água" value={goalInputs.water} onChangeText={(v) => updateGoalInput('water', v)} keyboardType="numeric" suffix="ml" />
+              <Field label="Açúcar máx." value={goalInputs.sugar} onChangeText={(v) => updateGoalInput('sugar', v)} keyboardType="numeric" suffix="g" />
+              <Field label="Sódio máx." value={goalInputs.sodium} onChangeText={(v) => updateGoalInput('sodium', v)} keyboardType="numeric" suffix="mg" />
+            </View>
+          </ScrollView>
+
+          <View style={modalStyles.actions}>
+            <TouchableOpacity style={modalStyles.cancelBtn} onPress={onClose}>
+              <Text style={modalStyles.cancelText}>Cancelar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={modalStyles.saveBtn} onPress={handleSave} disabled={saving}>
+              <Text style={modalStyles.saveText}>{saving ? 'Salvando...' : 'Salvar'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function Field({
+  label,
+  suffix,
+  ...props
+}: {
+  label: string;
+  suffix?: string;
+} & React.ComponentProps<typeof TextInput>) {
+  return (
+    <View style={modalStyles.fieldWrap}>
+      <Text style={modalStyles.label}>{label}</Text>
+      <View style={modalStyles.inputRow}>
+        <TextInput
+          {...props}
+          style={modalStyles.input}
+          placeholderTextColor={Colors.gray400}
+        />
+        {suffix && <Text style={modalStyles.suffix}>{suffix}</Text>}
+      </View>
+    </View>
+  );
+}
+
+function HelpModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  function openSource(url: string) {
+    Linking.openURL(url).catch(() => {
+      Alert.alert('Não foi possível abrir o link', 'Tente novamente em alguns instantes.');
+    });
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={modalStyles.bg}>
+        <TouchableOpacity style={modalStyles.backdrop} onPress={onClose} />
+        <View style={modalStyles.helpCard}>
+          <View style={modalStyles.header}>
+            <Text style={modalStyles.title}>Como calculamos suas metas</Text>
+            <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn}>
+              <MaterialIcons name="close" size={20} color={Colors.gray600} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={modalStyles.helpScroll}>
+            <Text style={modalStyles.helpIntro}>
+              As metas são uma estimativa inicial baseada nos seus dados de perfil. Elas servem como guia prático e podem ser ajustadas manualmente nas configurações.
+            </Text>
+
+            <View style={modalStyles.helpBlock}>
+              <Text style={modalStyles.helpBlockTitle}>Energia diária</Text>
+              <Text style={modalStyles.helpText}>
+                Usamos a fórmula Mifflin-St Jeor para estimar metabolismo basal e multiplicamos pelo nível de atividade. Para emagrecer, aplicamos um déficit moderado; para ganhar massa, um superávit controlado.
+              </Text>
+            </View>
+
+            <View style={modalStyles.helpBlock}>
+              <Text style={modalStyles.helpBlockTitle}>Macros e limites</Text>
+              <Text style={modalStyles.helpText}>
+                Proteína varia por peso, objetivo e atividade. Carboidratos, gorduras e fibras seguem faixas usadas em referências de ingestão diária. Açúcar e sódio aparecem como limites máximos.
+              </Text>
+            </View>
+
+            <View style={modalStyles.helpBlock}>
+              <Text style={modalStyles.helpBlockTitle}>Fontes usadas</Text>
+              <TouchableOpacity onPress={() => openSource('https://www.cdc.gov/healthy-weight-growth/losing-weight/index.html')}>
+                <Text style={modalStyles.sourceLink}>CDC - perda de peso gradual e sustentável</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => openSource('https://www.dietaryguidelines.gov/')}>
+                <Text style={modalStyles.sourceLink}>Dietary Guidelines for Americans - açúcar, sódio e padrão alimentar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => openSource('https://www.nationalacademies.org/cdn/materials/9fb9fae1-63a0-4048-88ad-3f972639149a')}>
+                <Text style={modalStyles.sourceLink}>National Academies/DRI - referência de macros, fibras e água</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => openSource('https://pubmed.ncbi.nlm.nih.gov/28642676/')}>
+                <Text style={modalStyles.sourceLink}>ISSN - proteína para pessoas fisicamente ativas</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={modalStyles.helpFootnote}>
+              Observação: se você tem condição médica, usa medicação, está grávida ou segue dieta terapêutica, confirme as metas com um profissional de saúde.
+            </Text>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+export function HomeScreen() {
+  const user = useStore((s) => s.user);
+  const profile = useStore((s) => s.profile);
+  const clearAuth = useStore((s) => s.clearAuth);
+  const todayLog = useStore(selectTodayLog);
+  const goals = useStore(selectGoals);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  const totals: FoodNutrition = useMemo(
+    () => todayLog?.totalNutrition ?? { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
+    [todayLog]
+  );
+
+  const safeGoals: MacroGoals = { ...DEFAULT_GOALS, ...(goals ?? {}) };
+  const kcalPct = macroPercent(totals.kcal, safeGoals.kcal);
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Bom dia' : hour < 18 ? 'Boa tarde' : 'Boa noite';
+  const firstName = (profile?.name ?? user?.name ?? 'Usuário').split(' ')[0];
+  const initials = (profile?.name ?? user?.name ?? 'U').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
+
+  const today = new Date().toLocaleDateString('pt-BR', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  });
+
+  async function handleLogout() {
+    Alert.alert('Sair da conta', 'Você quer sair do NutriMeta?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Sair',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await signOut();
+          } catch {
+            // Even if Firebase is offline, clear the local session.
+          } finally {
+            await clearSession();
+            clearAuth();
+          }
+        },
+      },
+    ]);
+  }
+
+  return (
+    <SafeAreaView style={styles.safe} edges={['top']}>
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.greeting}>{greeting}</Text>
+          <View style={styles.nameRow}>
+            <Text style={styles.userName}>{firstName}</Text>
+            <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+              <Text style={styles.logoutText}>Sair</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.dateLabel}>{today}</Text>
+        </View>
+        <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.helpButton} onPress={() => setHelpOpen(true)}>
+            <MaterialIcons name="help-outline" size={21} color={Colors.green600} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.settingsButton} onPress={() => setSettingsOpen(true)}>
+            {user?.avatarUrl ? (
+              <Image source={{ uri: user.avatarUrl }} style={styles.avatarImage} />
+            ) : (
+              <Text style={styles.avatarText}>{initials}</Text>
+            )}
+          <View style={styles.gearBadge}>
+            <MaterialIcons name="settings" size={12} color={Colors.white} />
+          </View>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+        <View style={styles.ringSection}>
+          <View style={styles.ringWrap}>
+            <RingChart pct={kcalPct} color={Colors.green400} />
+            <View style={styles.ringCenter}>
+              <Text style={styles.ringKcal}>{formatKcal(totals.kcal)}</Text>
+              <Text style={styles.ringKcalSub}>kcal hoje</Text>
+              <Text style={styles.ringGoal}>de {safeGoals.kcal}</Text>
+            </View>
+          </View>
+
+          <View style={styles.remainRow}>
+            <View style={styles.remainItem}>
+              <Text style={styles.remainVal}>{Math.max(0, safeGoals.kcal - Math.round(totals.kcal))}</Text>
+              <Text style={styles.remainLabel}>kcal restantes</Text>
+            </View>
+            <View style={[styles.remainItem, styles.remainCenter]}>
+              <Text style={styles.remainVal}>{Math.round(totals.kcal)}</Text>
+              <Text style={styles.remainLabel}>consumidas</Text>
+            </View>
+            <View style={styles.remainItem}>
+              <Text style={styles.remainVal}>{safeGoals.water}</Text>
+              <Text style={styles.remainLabel}>ml de água</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.macroGrid}>
+          <NutritionCard label="Proteína" emoji="🥩" current={totals.protein} goal={safeGoals.protein} unit="g" color={MacroColors.protein.primary} />
+          <NutritionCard label="Carboidratos" emoji="🌾" current={totals.carbs} goal={safeGoals.carbs} unit="g" color={MacroColors.carbs.primary} />
+          <NutritionCard label="Gorduras" emoji="🫒" current={totals.fat} goal={safeGoals.fat} unit="g" color={MacroColors.fat.primary} />
+          <NutritionCard label="Fibras" emoji="🥦" current={totals.fiber} goal={safeGoals.fiber} unit="g" color={MacroColors.fiber.primary} />
+          <NutritionCard label="Açúcar" emoji="🍬" current={totals.sugar ?? 0} goal={safeGoals.sugar} unit="g" color={Colors.purple} mode="limit" />
+          <NutritionCard label="Sódio" emoji="🧂" current={totals.sodium ?? 0} goal={safeGoals.sodium} unit="mg" color={Colors.warning} mode="limit" />
+          <NutritionCard label="Água" emoji="💧" current={0} goal={safeGoals.water} unit="ml" color={Colors.info} />
+          <NutritionCard label="Calorias" emoji="⚡" current={totals.kcal} goal={safeGoals.kcal} unit="" color={Colors.green400} />
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Refeições de hoje</Text>
+          {(!todayLog || todayLog.entries.length === 0) ? (
+            <View style={styles.emptyState}>
+              <MaterialIcons name="restaurant" size={42} color={Colors.gray400} />
+              <Text style={styles.emptyText}>Nenhuma refeição registrada ainda.</Text>
+              <Text style={styles.emptyHint}>Vá para a aba Registrar e adicione sua primeira refeição!</Text>
+            </View>
+          ) : (
+            <View style={styles.mealList}>
+              {todayLog.entries.slice().reverse().map((entry) => (
+                <MealItem
+                  key={entry.id}
+                  emoji={entry.emoji}
+                  name={entry.foodName}
+                  time={new Date(entry.addedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                  nutrition={entry.nutrition}
+                />
+              ))}
+            </View>
+          )}
+        </View>
+      </ScrollView>
+
+      <SettingsModal visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <HelpModal visible={helpOpen} onClose={() => setHelpOpen(false)} />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: Colors.bg },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.md,
+    backgroundColor: Colors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  greeting: { fontSize: Typography.sm, color: Colors.gray400 },
+  userName: { fontSize: Typography.xl, fontWeight: Typography.bold },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  logoutBtn: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.gray50,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  logoutText: { fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.bold },
+  dateLabel: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  helpButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.gray50,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingsButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: Colors.green50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarImage: { width: 48, height: 48, borderRadius: 24 },
+  avatarText: { fontSize: Typography.base, fontWeight: Typography.bold, color: Colors.green600 },
+  gearBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: Colors.green600,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: Colors.white,
+  },
+
+  scroll: { paddingBottom: 100 },
+  ringSection: { backgroundColor: Colors.white, padding: Spacing.base, marginBottom: Spacing.sm },
+  ringWrap: { alignItems: 'center', marginBottom: Spacing.md, position: 'relative' },
+  ringCenter: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
+  ringKcal: { fontSize: Typography.xxl, fontWeight: Typography.bold },
+  ringKcalSub: { fontSize: Typography.xs, color: Colors.gray400 },
+  ringGoal: { fontSize: Typography.sm, color: Colors.gray400 },
+  remainRow: { flexDirection: 'row', justifyContent: 'space-around' },
+  remainItem: { alignItems: 'center', flex: 1 },
+  remainCenter: { borderLeftWidth: 1, borderRightWidth: 1, borderColor: Colors.border, paddingHorizontal: Spacing.sm },
+  remainVal: { fontSize: Typography.lg, fontWeight: Typography.bold },
+  remainLabel: { fontSize: Typography.xs, color: Colors.gray400 },
+
+  macroGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.base,
+    marginBottom: Spacing.sm,
+    justifyContent: 'space-between',
+  },
+  macroCard: {
+    width: '48%',
+    backgroundColor: Colors.white,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    ...Shadows.sm,
+  },
+  macroCardTop: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: Spacing.sm, gap: Spacing.xs },
+  macroLabel: { fontSize: Typography.xs, fontWeight: Typography.semibold, color: Colors.gray400, flex: 1 },
+  macroPct: { fontSize: Typography.xs, fontWeight: Typography.bold },
+  macroVal: { fontSize: Typography.xxl, fontWeight: Typography.bold },
+  macroGoal: { fontSize: Typography.xs, color: Colors.gray400 },
+  macroBarBg: { height: 5, backgroundColor: Colors.gray50, borderRadius: 3, marginTop: Spacing.sm },
+  macroBarFill: { height: 5, borderRadius: 3 },
+  doneBadge: { fontSize: Typography.xs, fontWeight: Typography.semibold, marginTop: 4 },
+
+  section: { paddingHorizontal: Spacing.base },
+  sectionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, marginBottom: Spacing.sm },
+  mealList: { backgroundColor: Colors.white, borderRadius: Radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
+  mealItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  mealEmoji: { fontSize: 26, width: 40, textAlign: 'center' },
+  mealInfo: { flex: 1 },
+  mealName: { fontSize: Typography.md, fontWeight: Typography.semibold },
+  mealMacros: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
+  mealKcal: { fontSize: Typography.md, fontWeight: Typography.bold, color: Colors.gray600 },
+
+  emptyState: { alignItems: 'center', padding: Spacing.xl },
+  emptyText: { fontSize: Typography.md, fontWeight: Typography.medium, textAlign: 'center' },
+  emptyHint: { fontSize: Typography.sm, color: Colors.gray400, textAlign: 'center', marginTop: Spacing.sm },
+});
+
+const modalStyles = StyleSheet.create({
+  bg: { flex: 1, justifyContent: 'flex-end' },
+  backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.4)' },
+  sheet: {
+    maxHeight: '92%',
+    width: '100%',
+    maxWidth: Platform.OS === 'web' ? 720 : undefined,
+    alignSelf: 'center',
+    backgroundColor: Colors.white,
+    borderTopLeftRadius: Radius.xxl,
+    borderTopRightRadius: Radius.xxl,
+    padding: Spacing.base,
+    paddingBottom: Spacing.lg,
+  },
+  handle: { width: 40, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.base },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
+  title: { fontSize: Typography.xl, fontWeight: Typography.bold },
+  closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.gray50 },
+  closeText: { fontSize: Typography.xl, color: Colors.gray600, lineHeight: 24 },
+  scroll: { paddingBottom: Spacing.base },
+  photoRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginBottom: Spacing.lg },
+  photoButton: { width: 72, height: 72, borderRadius: 36, backgroundColor: Colors.green50, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: Colors.green100 },
+  photo: { width: 72, height: 72, borderRadius: 36 },
+  photoInitials: { fontSize: Typography.xl, fontWeight: Typography.bold, color: Colors.green600 },
+  photoInfo: { flex: 1 },
+  sectionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, marginBottom: 3 },
+  sectionHint: { fontSize: Typography.xs, color: Colors.gray400, lineHeight: 16 },
+  fieldGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.lg },
+  fieldWrap: { width: '48%' },
+  label: { fontSize: Typography.xs, fontWeight: Typography.semibold, color: Colors.gray600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.4 },
+  inputRow: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, backgroundColor: Colors.white },
+  input: { flex: 1, paddingVertical: Spacing.sm, fontSize: Typography.base, color: Colors.gray800 },
+  suffix: { fontSize: Typography.xs, color: Colors.gray400, marginLeft: 4 },
+  segmentRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.lg },
+  segment: { flex: 1, paddingVertical: Spacing.sm, alignItems: 'center', borderRadius: Radius.md, backgroundColor: Colors.gray50, borderWidth: 1, borderColor: Colors.border },
+  segmentActive: { backgroundColor: Colors.green50, borderColor: Colors.green400 },
+  segmentText: { color: Colors.gray600, fontWeight: Typography.semibold },
+  segmentTextActive: { color: Colors.green600 },
+  segmentWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.lg },
+  pill: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: Radius.full, backgroundColor: Colors.gray50, borderWidth: 1, borderColor: Colors.border },
+  pillActive: { backgroundColor: Colors.green50, borderColor: Colors.green400 },
+  pillText: { color: Colors.gray600, fontWeight: Typography.semibold, fontSize: Typography.sm },
+  pillTextActive: { color: Colors.green600 },
+  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.sm },
+  recalcBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green400 },
+  recalcText: { color: Colors.green600, fontWeight: Typography.bold, fontSize: Typography.sm },
+  actions: { flexDirection: 'row', gap: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
+  cancelBtn: { flex: 1, alignItems: 'center', paddingVertical: Spacing.md, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
+  cancelText: { color: Colors.gray600, fontWeight: Typography.semibold },
+  saveBtn: { flex: 1.4, alignItems: 'center', paddingVertical: Spacing.md, borderRadius: Radius.md, backgroundColor: Colors.green400 },
+  saveText: { color: Colors.white, fontWeight: Typography.bold },
+  helpCard: {
+    maxHeight: '82%',
+    maxWidth: Platform.OS === 'web' ? 620 : undefined,
+    marginHorizontal: Spacing.base,
+    backgroundColor: Colors.white,
+    borderRadius: Radius.xl,
+    padding: Spacing.base,
+    alignSelf: 'stretch',
+  },
+  helpScroll: { paddingBottom: Spacing.sm },
+  helpIntro: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 20, marginBottom: Spacing.md },
+  helpBlock: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    paddingTop: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  helpBlockTitle: { fontSize: Typography.base, fontWeight: Typography.bold, marginBottom: 6 },
+  helpText: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 20 },
+  sourceLink: {
+    fontSize: Typography.sm,
+    color: Colors.green600,
+    fontWeight: Typography.semibold,
+    lineHeight: 22,
+    marginBottom: 8,
+  },
+  helpFootnote: {
+    fontSize: Typography.xs,
+    color: Colors.gray400,
+    lineHeight: 18,
+    backgroundColor: Colors.gray50,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+  },
+});

@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "273605316772",
+    "project_id": "nutrimeta-df003",
+    "storage_bucket": "nutrimeta-df003.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:273605316772:android:5e688953c6dc5c1bab5631",
+        "android_client_info": {
+          "package_name": "com.n2ilva.nutrimeta"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCEIY0Qd41LwKDeP_XQTPLu57jqcAoo244"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
