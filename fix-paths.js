@@ -26,5 +26,7 @@ if (fs.existsSync(fontsCssSource)) {
   console.log('✅ Arquivo fonts.css copiado para dist/');
 }
 
-console.log('✅ Caminhos corrigidos em dist/index.html');
+// Garante que GitHub Pages sirva pastas como _expo e paths com node_modules sem Jekyll.
+fs.writeFileSync(path.join(__dirname, 'dist', '.nojekyll'), '', 'utf-8');
 
+console.log('✅ Caminhos corrigidos em dist/index.html');

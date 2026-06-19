@@ -92,7 +92,7 @@ export interface MealEntry {
   unit: QuantityUnit;
   nutrition: FoodNutrition;                      // calculated total
   addedAt: Date;
-  source: 'manual' | 'voice' | 'saved';
+  source: 'manual' | 'voice' | 'photo' | 'saved';
   savedMealId?: string;
 }
 

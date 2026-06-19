@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, Platform, Text, TouchableOpacity, View, StyleSheet } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 
 import { AddMealScreen } from './src/screens/AddMealScreen';
@@ -19,9 +19,15 @@ import { clearSession, loadSession, saveSession } from './src/services/sessionSt
 import { calcMacroGoals, formatDate } from './src/utils/nutrition';
 
 type MainTab = 'home' | 'addMeal' | 'analysis' | 'ranking';
+const MAIN_TAB_BAR_HEIGHT = 70;
+const WEB_FIXED_TAB_BAR_STYLE = Platform.OS === 'web'
+  ? ({ position: 'fixed', left: 0, right: 0, marginLeft: 'auto', marginRight: 'auto' } as any)
+  : null;
 
 function MainTabs() {
   const [tab, setTab] = useState<MainTab>('home');
+  const insets = useSafeAreaInsets();
+  const tabBarBottom = Platform.OS === 'web' ? Spacing.base : insets.bottom + Spacing.sm;
 
   const tabs = useMemo(
     () => [
@@ -35,14 +41,14 @@ function MainTabs() {
 
   return (
     <View style={styles.appShell}>
-      <View style={styles.content}>
+      <View style={[styles.content, { paddingBottom: tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm }]}>
         {tab === 'home' && <HomeScreen />}
         {tab === 'addMeal' && <AddMealScreen />}
         {tab === 'analysis' && <AnalysisScreen />}
         {tab === 'ranking' && <RankingScreen />}
       </View>
 
-      <View style={styles.tabBar}>
+      <View style={[styles.tabBar, WEB_FIXED_TAB_BAR_STYLE, { bottom: tabBarBottom }]}>
         {tabs.map((item) => {
           const active = tab === item.key;
           return (
@@ -186,7 +192,7 @@ const styles = StyleSheet.create({
     ...(Platform.OS === 'web'
       ? { width: '100%', maxWidth: 760, alignSelf: 'center' }
       : { left: Spacing.base, right: Spacing.base }),
-    bottom: Spacing.base,
+    minHeight: MAIN_TAB_BAR_HEIGHT,
     flexDirection: 'row',
     gap: Spacing.sm,
     padding: Spacing.sm,

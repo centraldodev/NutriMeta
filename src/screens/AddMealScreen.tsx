@@ -1,13 +1,15 @@
 import React, { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Image,
   TextInput, Modal, Alert, ActivityIndicator, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, Radius, Shadows } from '../constants/theme';
 import { useStore, selectGoals, selectSavedMeals } from '../store';
 import { addMealEntry, incrementMealUsage, removeMealEntry } from '../services/nutritionService';
+import { analyzeMealPhoto } from '../services/photoMealAiService';
 import {
   findFood,
   searchFoodDatabase,
@@ -52,15 +54,15 @@ function parseQtyInput(value: string): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-type VoiceMealDraft = {
+type MealDraft = {
   key: string;
-  food: FoodItem;
+  food: FoodItem | null;
   foodText: string;
   foodFound: boolean;
   quantity: number;
   unit: QuantityUnit;
   nutrition: ReturnType<typeof calculateNutrition>;
-  spokenText: string;
+  sourceNote?: string;
 };
 
 const QUANTITY_WORDS: Record<string, number> = {
@@ -139,7 +141,7 @@ function splitVoiceText(rawText: string): string[] {
     .filter(Boolean);
 }
 
-function parseVoiceMeal(rawText: string): VoiceMealDraft[] {
+function parseVoiceMeal(rawText: string): MealDraft[] {
   return splitVoiceText(rawText).flatMap((segment, index) => {
     const food = findFood(segment);
     if (!food) return [];
@@ -154,17 +156,29 @@ function parseVoiceMeal(rawText: string): VoiceMealDraft[] {
       quantity,
       unit,
       nutrition: calculateNutrition(food, quantity, unit),
-      spokenText: segment,
+      sourceNote: `Falado: ${segment}`,
     }];
   });
 }
 
-function recalcVoiceDraft(item: VoiceMealDraft, changes: Partial<VoiceMealDraft>): VoiceMealDraft {
+function emptyNutrition(): ReturnType<typeof calculateNutrition> {
+  return { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 };
+}
+
+function recalcMealDraft(item: MealDraft, changes: Partial<MealDraft>): MealDraft {
   const next = { ...item, ...changes };
+  if (!next.food) {
+    return {
+      ...next,
+      foodFound: false,
+      nutrition: emptyNutrition(),
+    };
+  }
   const unit = next.food.nutritionPer[next.unit] ? next.unit : next.food.defaultUnit;
   const quantity = next.quantity > 0 ? next.quantity : 1;
   return {
     ...next,
+    foodFound: true,
     unit,
     quantity,
     nutrition: calculateNutrition(next.food, quantity, unit),
@@ -442,11 +456,11 @@ function VoiceModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onConfirm: (items: VoiceMealDraft[]) => void;
+  onConfirm: (items: MealDraft[]) => void;
 }) {
   const [listening,   setListening]   = useState(false);
   const [transcript,  setTranscript]  = useState('');
-  const [editableDrafts, setEditableDrafts] = useState<VoiceMealDraft[]>([]);
+  const [editableDrafts, setEditableDrafts] = useState<MealDraft[]>([]);
   const [addedCount, setAddedCount] = useState(0);
   const speechModule = React.useMemo(loadSpeechRecognitionModule, []);
   const hasInvalidDraft = editableDrafts.some((item) => !item.foodFound);
@@ -524,7 +538,7 @@ function VoiceModal({
     setEditableDrafts([]);
   }
 
-  function updateDraft(key: string, updater: (item: VoiceMealDraft) => VoiceMealDraft) {
+  function updateDraft(key: string, updater: (item: MealDraft) => MealDraft) {
     setEditableDrafts((items) => items.map((item) => item.key === key ? updater(item) : item));
   }
 
@@ -539,7 +553,7 @@ function VoiceModal({
         return { ...item, foodText: value, foodFound: false };
       }
       const unit = found.nutritionPer[item.unit] ? item.unit : found.defaultUnit;
-      return recalcVoiceDraft(item, {
+      return recalcMealDraft(item, {
         food: found,
         foodText: value,
         foodFound: true,
@@ -549,11 +563,11 @@ function VoiceModal({
   }
 
   function updateDraftQuantity(key: string, value: string) {
-    updateDraft(key, (item) => recalcVoiceDraft(item, { quantity: parseQtyInput(value) }));
+    updateDraft(key, (item) => recalcMealDraft(item, { quantity: parseQtyInput(value) }));
   }
 
   function updateDraftUnit(key: string, nextUnit: QuantityUnit) {
-    updateDraft(key, (item) => recalcVoiceDraft(item, { unit: nextUnit }));
+    updateDraft(key, (item) => recalcMealDraft(item, { unit: nextUnit }));
   }
 
   return (
@@ -599,7 +613,7 @@ function VoiceModal({
               editableDrafts.map((item) => (
                 <View key={item.key} style={voiceModal.editCard}>
                   <View style={voiceModal.editHeader}>
-                    <Text style={voiceModal.previewEmoji}>{item.food.emoji}</Text>
+                    <Text style={voiceModal.previewEmoji}>{item.food?.emoji ?? '?'}</Text>
                     <View style={voiceModal.previewInfo}>
                       <TextInput
                         style={[voiceModal.foodInput, !item.foodFound && voiceModal.inputError]}
@@ -650,8 +664,8 @@ function VoiceModal({
                   <Text style={voiceModal.previewMeta}>
                     {Math.round(item.nutrition.kcal)} kcal · P:{Math.round(item.nutrition.protein)}g · C:{Math.round(item.nutrition.carbs)}g · G:{Math.round(item.nutrition.fat)}g
                   </Text>
-                  {item.spokenText ? (
-                    <Text style={voiceModal.spokenText}>Falado: {item.spokenText}</Text>
+                  {item.sourceNote ? (
+                    <Text style={voiceModal.spokenText}>{item.sourceNote}</Text>
                   ) : null}
                   </View>
               ))
@@ -670,6 +684,276 @@ function VoiceModal({
               style={[modal.btnAdd, (editableDrafts.length === 0 || hasInvalidDraft) && modal.btnDisabled]}
               onPress={confirm}
               disabled={editableDrafts.length === 0 || hasInvalidDraft}
+            >
+              <Text style={modal.btnAddText}>Adicionar e continuar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+// ─── Photo Modal ──────────────────────────────────────────────────────────────
+
+function PhotoModal({
+  visible, onClose, onConfirm,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onConfirm: (items: MealDraft[]) => void;
+}) {
+  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [summary, setSummary] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [editableDrafts, setEditableDrafts] = useState<MealDraft[]>([]);
+  const [addedCount, setAddedCount] = useState(0);
+  const hasInvalidDraft = editableDrafts.some((item) => !item.foodFound);
+
+  React.useEffect(() => {
+    if (!visible) return;
+    setImageUri(null);
+    setSummary('');
+    setAnalyzing(false);
+    setEditableDrafts([]);
+    setAddedCount(0);
+  }, [visible]);
+
+  async function pickImage(source: 'camera' | 'library') {
+    const permission = source === 'camera'
+      ? await ImagePicker.requestCameraPermissionsAsync()
+      : await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+    if (!permission.granted) {
+      Alert.alert('Permissão necessária', source === 'camera'
+        ? 'Autorize a câmera para registrar refeições por foto.'
+        : 'Autorize o acesso às fotos para escolher uma imagem do prato.');
+      return;
+    }
+
+    const result = source === 'camera'
+      ? await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          quality: 0.65,
+          base64: true,
+        })
+      : await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          quality: 0.65,
+          base64: true,
+        });
+
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    if (!asset?.base64) {
+      Alert.alert('Imagem inválida', 'Não consegui preparar esta foto para análise.');
+      return;
+    }
+
+    setImageUri(asset.uri);
+    await analyzePhoto(asset.base64, asset.mimeType ?? 'image/jpeg');
+  }
+
+  async function analyzePhoto(base64: string, mimeType: string) {
+    setAnalyzing(true);
+    setSummary('');
+    setEditableDrafts([]);
+    try {
+      const result = await analyzeMealPhoto(base64, mimeType);
+      setSummary(result.summary ?? '');
+      const drafts = result.items.map((item, index) => {
+        const food = findFood(item.foodName) ?? null;
+        const unit = food && food.nutritionPer[item.unit] ? item.unit : food?.defaultUnit ?? item.unit;
+        const quantity = item.quantity > 0 ? item.quantity : 1;
+        return {
+          key: `photo_${index}_${item.foodName}_${quantity}_${unit}`,
+          food,
+          foodText: food?.name ?? item.foodName,
+          foodFound: Boolean(food),
+          quantity,
+          unit,
+          nutrition: food ? calculateNutrition(food, quantity, unit) : emptyNutrition(),
+          sourceNote: item.notes
+            ? `IA: ${item.notes}${item.confidence != null ? ` · confiança ${Math.round(item.confidence * 100)}%` : ''}`
+            : item.confidence != null
+              ? `IA: confiança ${Math.round(item.confidence * 100)}%`
+              : undefined,
+        };
+      });
+      setEditableDrafts(drafts);
+      if (drafts.length === 0) {
+        Alert.alert('Nada identificado', 'Tente uma foto mais clara do prato ou adicione manualmente.');
+      }
+    } catch (e) {
+      console.warn('Photo meal analysis failed', e);
+      Alert.alert('Erro ao analisar foto', 'Não consegui identificar o prato agora. Tente novamente ou use a entrada manual.');
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  function confirm() {
+    onConfirm(editableDrafts);
+    setAddedCount((count) => count + editableDrafts.length);
+    setImageUri(null);
+    setSummary('');
+    setEditableDrafts([]);
+  }
+
+  function updateDraft(key: string, updater: (item: MealDraft) => MealDraft) {
+    setEditableDrafts((items) => items.map((item) => item.key === key ? updater(item) : item));
+  }
+
+  function removeDraft(key: string) {
+    setEditableDrafts((items) => items.filter((item) => item.key !== key));
+  }
+
+  function updateDraftFood(key: string, value: string) {
+    updateDraft(key, (item) => {
+      const found = findFood(value);
+      if (!found) {
+        return { ...item, food: null, foodText: value, foodFound: false, nutrition: emptyNutrition() };
+      }
+      const unit = found.nutritionPer[item.unit] ? item.unit : found.defaultUnit;
+      return recalcMealDraft(item, {
+        food: found,
+        foodText: value,
+        foodFound: true,
+        unit,
+      });
+    });
+  }
+
+  function updateDraftQuantity(key: string, value: string) {
+    updateDraft(key, (item) => recalcMealDraft(item, { quantity: parseQtyInput(value) }));
+  }
+
+  function updateDraftUnit(key: string, nextUnit: QuantityUnit) {
+    updateDraft(key, (item) => recalcMealDraft(item, { unit: nextUnit }));
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={modal.bg}>
+        <TouchableOpacity style={modal.backdrop} onPress={onClose} />
+        <View style={modal.sheet}>
+          <View style={modal.handle} />
+          <View style={modal.modalHeader}>
+            <View>
+              <Text style={modal.title}>Foto do prato</Text>
+              <Text style={modal.subtitle}>
+                {addedCount > 0 ? `${addedCount} alimento(s) adicionados hoje` : 'A IA identifica e você confere antes de salvar.'}
+              </Text>
+            </View>
+            <TouchableOpacity style={modal.closePill} onPress={onClose}>
+              <Text style={modal.closePillText}>Concluir</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={photoModal.photoActions}>
+            <TouchableOpacity style={photoModal.photoButton} onPress={() => pickImage('camera')} disabled={analyzing}>
+              <MaterialIcons name="photo-camera" size={22} color={Colors.green600} />
+              <Text style={photoModal.photoButtonText}>Tirar foto</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={photoModal.photoButton} onPress={() => pickImage('library')} disabled={analyzing}>
+              <MaterialIcons name="photo-library" size={22} color={Colors.green600} />
+              <Text style={photoModal.photoButtonText}>Galeria</Text>
+            </TouchableOpacity>
+          </View>
+
+          {imageUri ? (
+            <Image source={{ uri: imageUri }} style={photoModal.previewImage} resizeMode="cover" />
+          ) : (
+            <View style={photoModal.emptyImage}>
+              <MaterialIcons name="restaurant" size={34} color={Colors.gray400} />
+              <Text style={photoModal.emptyImageText}>Escolha uma foto clara do prato para começar.</Text>
+            </View>
+          )}
+
+          {analyzing && (
+            <View style={photoModal.loadingBox}>
+              <ActivityIndicator color={Colors.green400} />
+              <Text style={photoModal.loadingText}>Analisando alimentos e porções...</Text>
+            </View>
+          )}
+
+          {summary ? <Text style={photoModal.summary}>{summary}</Text> : null}
+
+          <View style={voiceModal.previewBox}>
+            <Text style={voiceModal.exTitle}>Itens detectados</Text>
+            {editableDrafts.length === 0 ? (
+              <Text style={voiceModal.previewEmpty}>Depois da análise, confira os alimentos aqui e ajuste o que precisar.</Text>
+            ) : (
+              <ScrollView showsVerticalScrollIndicator>
+                {editableDrafts.map((item) => (
+                  <View key={item.key} style={voiceModal.editCard}>
+                    <View style={voiceModal.editHeader}>
+                      <Text style={voiceModal.previewEmoji}>{item.food?.emoji ?? '?'}</Text>
+                      <View style={voiceModal.previewInfo}>
+                        <TextInput
+                          style={[voiceModal.foodInput, !item.foodFound && voiceModal.inputError]}
+                          value={item.foodText}
+                          onChangeText={(value) => updateDraftFood(item.key, value)}
+                          placeholder="Alimento"
+                          placeholderTextColor={Colors.gray400}
+                        />
+                        {!item.foodFound && <Text style={voiceModal.errorText}>Alimento não encontrado na base.</Text>}
+                      </View>
+                      <TouchableOpacity style={voiceModal.removeBtn} onPress={() => removeDraft(item.key)}>
+                        <MaterialIcons name="close" size={18} color={Colors.gray600} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={voiceModal.editRow}>
+                      <View style={voiceModal.quantityEdit}>
+                        <Text style={voiceModal.smallLabel}>Qtd.</Text>
+                        <TextInput
+                          style={voiceModal.quantityInput}
+                          value={String(item.quantity).replace('.', ',')}
+                          onChangeText={(value) => updateDraftQuantity(item.key, value)}
+                          keyboardType="decimal-pad"
+                          placeholder="1"
+                          placeholderTextColor={Colors.gray400}
+                        />
+                      </View>
+                      <View style={voiceModal.unitEdit}>
+                        <Text style={voiceModal.smallLabel}>Unidade</Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                          <View style={voiceModal.unitRow}>
+                            {getFoodUnits(item.food).map((unitOption) => (
+                              <TouchableOpacity
+                                key={unitOption}
+                                style={[voiceModal.unitMiniChip, item.unit === unitOption && voiceModal.unitMiniChipActive]}
+                                onPress={() => updateDraftUnit(item.key, unitOption)}
+                              >
+                                <Text style={[voiceModal.unitMiniText, item.unit === unitOption && voiceModal.unitMiniTextActive]}>
+                                  {UNIT_LABELS[unitOption]}
+                                </Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                        </ScrollView>
+                      </View>
+                    </View>
+
+                    <Text style={voiceModal.previewMeta}>
+                      {Math.round(item.nutrition.kcal)} kcal · P:{Math.round(item.nutrition.protein)}g · C:{Math.round(item.nutrition.carbs)}g · G:{Math.round(item.nutrition.fat)}g
+                    </Text>
+                    {item.sourceNote ? <Text style={voiceModal.spokenText}>{item.sourceNote}</Text> : null}
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+
+          <View style={modal.actions}>
+            <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
+              <Text style={modal.btnCancelText}>Fechar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[modal.btnAdd, (editableDrafts.length === 0 || hasInvalidDraft || analyzing) && modal.btnDisabled]}
+              onPress={confirm}
+              disabled={editableDrafts.length === 0 || hasInvalidDraft || analyzing}
             >
               <Text style={modal.btnAddText}>Adicionar e continuar</Text>
             </TouchableOpacity>
@@ -719,22 +1003,24 @@ export function AddMealScreen() {
 
   const [addModal,   setAddModal]   = useState(false);
   const [voiceModal, setVoiceModal] = useState(false);
+  const [photoModal, setPhotoModal] = useState(false);
 
-  async function handleVoiceConfirm(items: VoiceMealDraft[]) {
+  async function saveDraftItems(items: MealDraft[], source: 'voice' | 'photo') {
     if (!user || !goals) return;
     if (items.length === 0) {
-      Alert.alert('Não entendi os alimentos', 'Tente falar com quantidade e nome do alimento, por exemplo: 2 ovos e 1 fatia de pão.');
+      Alert.alert('Nenhum alimento para adicionar', 'Revise os itens detectados antes de confirmar.');
       return;
     }
 
     for (const item of items) {
+      if (!item.food) continue;
       const payload = {
         foodName:  `${item.food.name} (${item.quantity} ${UNIT_LABELS[item.unit]})`,
         emoji:     item.food.emoji,
         quantity:  item.quantity,
         unit:      item.unit,
         nutrition: item.nutrition,
-        source:    'voice',
+        source,
       } as const;
       const entry = isFirebaseConfigured && user.id !== 'dev_user'
         ? await addMealEntry(user.id, goals, payload)
@@ -746,6 +1032,18 @@ export function AddMealScreen() {
           };
       addEntryFn(entry);
     }
+  }
+
+  async function handleVoiceConfirm(items: MealDraft[]) {
+    if (items.length === 0) {
+      Alert.alert('Não entendi os alimentos', 'Tente falar com quantidade e nome do alimento, por exemplo: 2 ovos e 1 fatia de pão.');
+      return;
+    }
+    await saveDraftItems(items, 'voice');
+  }
+
+  async function handlePhotoConfirm(items: MealDraft[]) {
+    await saveDraftItems(items, 'photo');
   }
 
   async function quickAdd(mealId: string) {
@@ -799,6 +1097,10 @@ export function AddMealScreen() {
           <MaterialIcons name="mic" size={22} color={Colors.purpleD} />
           <Text style={styles.btnVoiceText}>Falar o que comi</Text>
         </TouchableOpacity>
+        <TouchableOpacity style={styles.btnPhoto} onPress={() => setPhotoModal(true)}>
+          <MaterialIcons name="photo-camera" size={22} color={Colors.green600} />
+          <Text style={styles.btnPhotoText}>Fotografar prato</Text>
+        </TouchableOpacity>
 
         {/* Saved meals */}
         {savedMeals.length > 0 && (
@@ -840,6 +1142,7 @@ export function AddMealScreen() {
 
       <AddMealModal visible={addModal} onClose={() => setAddModal(false)} onAdded={() => {}} />
       <VoiceModal   visible={voiceModal} onClose={() => setVoiceModal(false)} onConfirm={handleVoiceConfirm} />
+      <PhotoModal   visible={photoModal} onClose={() => setPhotoModal(false)} onConfirm={handlePhotoConfirm} />
     </SafeAreaView>
   );
 }
@@ -860,11 +1163,18 @@ const styles = StyleSheet.create({
   btnManualText: { color: Colors.white, fontSize: Typography.base, fontWeight: Typography.bold },
   btnVoice: {
     backgroundColor: Colors.purpleL, borderRadius: Radius.md,
-    paddingVertical: 14, alignItems: 'center', marginBottom: Spacing.lg,
+    paddingVertical: 14, alignItems: 'center', marginBottom: Spacing.sm,
     borderWidth: 1.5, borderColor: Colors.purple,
     flexDirection: 'row', justifyContent: 'center', gap: Spacing.sm,
   },
   btnVoiceText: { color: Colors.purpleD, fontSize: Typography.base, fontWeight: Typography.semibold },
+  btnPhoto: {
+    backgroundColor: Colors.green50, borderRadius: Radius.md,
+    paddingVertical: 14, alignItems: 'center', marginBottom: Spacing.lg,
+    borderWidth: 1.5, borderColor: Colors.green400,
+    flexDirection: 'row', justifyContent: 'center', gap: Spacing.sm,
+  },
+  btnPhotoText: { color: Colors.green600, fontSize: Typography.base, fontWeight: Typography.semibold },
 
   sectionLabel: { fontSize: Typography.xs, fontWeight: Typography.bold, color: Colors.gray400, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: Spacing.sm },
 
@@ -989,4 +1299,59 @@ const voiceModal = StyleSheet.create({
   unitMiniText: { fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.semibold },
   unitMiniTextActive: { color: Colors.green600 },
   spokenText:   { fontSize: Typography.xs, color: Colors.gray400, marginTop: 3, fontStyle: 'italic' },
+});
+
+const photoModal = StyleSheet.create({
+  photoActions: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.sm },
+  photoButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: Colors.green400,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.green50,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: Spacing.xs,
+  },
+  photoButtonText: { color: Colors.green600, fontSize: Typography.sm, fontWeight: Typography.bold },
+  previewImage: {
+    width: '100%',
+    height: 170,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.gray50,
+    marginBottom: Spacing.sm,
+  },
+  emptyImage: {
+    height: 150,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.gray50,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  emptyImageText: { marginTop: Spacing.xs, fontSize: Typography.sm, color: Colors.gray400, textAlign: 'center' },
+  loadingBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.green50,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  loadingText: { fontSize: Typography.sm, color: Colors.green600, fontWeight: Typography.semibold },
+  summary: {
+    fontSize: Typography.sm,
+    color: Colors.gray600,
+    backgroundColor: Colors.gray50,
+    borderRadius: Radius.sm,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
 });
