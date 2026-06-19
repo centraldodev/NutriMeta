@@ -1,0 +1,20 @@
+const fs = require('fs');
+const path = require('path');
+
+// Corrigir caminhos no index.html para GitHub Pages
+const indexPath = path.join(__dirname, 'dist', 'index.html');
+
+if (!fs.existsSync(indexPath)) {
+  console.error('Erro: dist/index.html não encontrado');
+  process.exit(1);
+}
+
+let html = fs.readFileSync(indexPath, 'utf-8');
+
+// Substituir caminhos absolutos por relativos
+html = html.replace(/src="\/_expo\//g, 'src="./_expo/');
+html = html.replace(/href="\/_expo\//g, 'href="./_expo/');
+
+fs.writeFileSync(indexPath, html, 'utf-8');
+
+console.log('✅ Caminhos corrigidos em dist/index.html');

@@ -34,10 +34,7 @@ jobs:
         run: npm install
 
       - name: Build web
-        run: npx expo export --platform web --output-dir dist
-
-      - name: List dist contents
-        run: ls -la dist/
+        run: npm run build:web
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
