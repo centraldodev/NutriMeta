@@ -213,3 +213,47 @@ export function formatKcal(kcal: number): string {
 export function formatGrams(g: number): string {
   return `${Math.round(g)}g`;
 }
+
+const NUTRIENT_DISPLAY: {
+  key: keyof FoodNutrition;
+  label: string;
+  unit: string;
+}[] = [
+  { key: 'kcal', label: 'Calorias', unit: 'kcal' },
+  { key: 'protein', label: 'Proteína', unit: 'g' },
+  { key: 'carbs', label: 'Carboidratos', unit: 'g' },
+  { key: 'fat', label: 'Gorduras', unit: 'g' },
+  { key: 'fiber', label: 'Fibras', unit: 'g' },
+  { key: 'sugar', label: 'Açúcar', unit: 'g' },
+  { key: 'sodium', label: 'Sódio', unit: 'mg' },
+  { key: 'calcium', label: 'Cálcio', unit: 'mg' },
+  { key: 'iron', label: 'Ferro', unit: 'mg' },
+  { key: 'potassium', label: 'Potássio', unit: 'mg' },
+  { key: 'magnesium', label: 'Magnésio', unit: 'mg' },
+  { key: 'zinc', label: 'Zinco', unit: 'mg' },
+  { key: 'vitaminA', label: 'Vit. A', unit: 'mcg' },
+  { key: 'vitaminC', label: 'Vit. C', unit: 'mg' },
+  { key: 'vitaminD', label: 'Vit. D', unit: 'mcg' },
+  { key: 'vitaminE', label: 'Vit. E', unit: 'mg' },
+  { key: 'vitaminB12', label: 'Vit. B12', unit: 'mcg' },
+  { key: 'folate', label: 'Folato', unit: 'mcg' },
+];
+
+function formatNutrientValue(value: number): string {
+  return value >= 10 ? String(Math.round(value)) : String(Math.round(value * 10) / 10).replace('.', ',');
+}
+
+export function formatNutritionDetails(
+  nutrition: FoodNutrition,
+  options: { includeKcal?: boolean } = {}
+): string {
+  return NUTRIENT_DISPLAY
+    .filter((item) => options.includeKcal || item.key !== 'kcal')
+    .map((item) => {
+      const value = nutrition[item.key];
+      if (typeof value !== 'number' || value <= 1) return null;
+      return `${item.label}: ${formatNutrientValue(value)}${item.unit}`;
+    })
+    .filter((item): item is string => Boolean(item))
+    .join(' · ');
+}

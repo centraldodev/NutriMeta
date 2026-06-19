@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   ActivityIndicator,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
   Platform,
 } from 'react-native';
@@ -12,10 +14,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Colors, MacroColors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
 import { isFirebaseConfigured } from '../config';
+import { generateNutritionInsights, NutritionInsight } from '../services/analysisAiService';
 import { getRecentDailyLogs } from '../services/nutritionService';
 import { useStore, selectGoals } from '../store';
 import { DailyLog, FoodNutrition, MacroGoals } from '../types';
 import { calcGoalProgressPercent, formatDate, macroPercent, sumNutrition } from '../utils/nutrition';
+import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
 
 const EMPTY_TOTAL: FoodNutrition = { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 };
 const DEFAULT_GOALS: MacroGoals = {
@@ -50,6 +54,13 @@ function averageNutrition(logs: DailyLog[]): FoodNutrition {
   average.kcal = Math.round(average.kcal);
   average.sodium = Math.round(average.sodium ?? 0);
   return average;
+}
+
+function mergeTodayLog(logs: DailyLog[], todayLog: DailyLog | null): DailyLog[] {
+  if (!todayLog) return logs;
+  const byDate = new Map(logs.map((log) => [log.date, log]));
+  byDate.set(todayLog.date, todayLog);
+  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 const MICRO_NUTRIENTS: { key: keyof FoodNutrition; label: string; unit: string }[] = [
@@ -103,12 +114,43 @@ function MacroAverage({ label, current, goal, color, unit = 'g' }: {
   );
 }
 
+function buildLocalInsight(todayLog: DailyLog | undefined, goals: MacroGoals, weekAverage: FoodNutrition): NutritionInsight {
+  if (!todayLog) {
+    return {
+      summary: 'Registre uma refeição para receber uma leitura do dia.',
+      tips: ['Depois do primeiro registro, a análise compara seu dia com suas metas e com a média recente.'],
+    };
+  }
+
+  const total = todayLog.totalNutrition ?? EMPTY_TOTAL;
+  const tips: string[] = [];
+  const waterMl = todayLog.waterMl ?? 0;
+  const waterEntries = todayLog.entries.filter((entry) => (entry.waterMl ?? 0) > 0);
+  if (waterMl < goals.water * 0.5) tips.push('Água ainda está baixa para sua meta; tente distribuir copos ao longo do dia em vez de deixar tudo para o fim.');
+  if (waterEntries.length <= 1 && waterMl > 0) tips.push('Você registrou água em poucos horários; a regularidade ajuda a manter hidratação mais estável.');
+  if (total.protein < goals.protein * 0.5) tips.push('Proteína ainda está baixa para a meta; uma fonte magra na próxima refeição pode ajudar.');
+  if (total.fiber < goals.fiber * 0.5) tips.push('Fibras ainda estão baixas; legumes, frutas, feijões ou grãos integrais melhoram o equilíbrio do dia.');
+  if ((total.sodium ?? 0) > goals.sodium) tips.push('Sódio passou do limite; priorize alimentos frescos e menos ultraprocessados no restante do dia.');
+  if ((total.sugar ?? 0) > goals.sugar) tips.push('Açúcar passou da referência; vale equilibrar as próximas escolhas com alimentos menos doces.');
+  if (total.kcal > goals.kcal * 1.1) tips.push('Calorias já passaram da meta; refeições mais leves e ricas em vegetais podem fechar melhor o dia.');
+  if (weekAverage.kcal > 0 && total.kcal < weekAverage.kcal * 0.7) tips.push('Hoje está abaixo da sua média recente; acompanhe se isso combina com fome, treino e rotina.');
+  if (tips.length === 0) tips.push('Seu dia está caminhando bem; mantenha variedade de alimentos para cobrir micronutrientes.');
+
+  return {
+    summary: `Hoje você registrou ${Math.round(total.kcal)} kcal em ${todayLog.entries.length} alimento(s).`,
+    tips: tips.slice(0, 3),
+  };
+}
+
 export function AnalysisScreen() {
   const user = useStore((s) => s.user);
+  const profile = useStore((s) => s.profile);
   const todayLog = useStore((s) => s.todayLog);
   const goals = useStore(selectGoals);
   const [logs, setLogs] = useState<DailyLog[]>([]);
   const [loading, setLoading] = useState(false);
+  const [insight, setInsight] = useState<NutritionInsight | null>(null);
+  const [insightLoading, setInsightLoading] = useState(false);
 
   const safeGoals = { ...DEFAULT_GOALS, ...(goals ?? {}) };
 
@@ -131,21 +173,24 @@ export function AnalysisScreen() {
     loadLogs();
   }, [user?.id, todayLog?.updatedAt]);
 
-  const byDate = useMemo(() => new Map(logs.map((log) => [log.date, log])), [logs]);
+  const mergedLogs = useMemo(() => mergeTodayLog(logs, todayLog), [logs, todayLog]);
+  const byDate = useMemo(() => new Map(mergedLogs.map((log) => [log.date, log])), [mergedLogs]);
   const weekDates = useMemo(() => getLastNDates(7), []);
   const weekLogs = useMemo(() => weekDates.map((date) => byDate.get(date)).filter(Boolean) as DailyLog[], [byDate, weekDates]);
-  const monthAverage = useMemo(() => averageNutrition(logs), [logs]);
+  const monthAverage = useMemo(() => averageNutrition(mergedLogs), [mergedLogs]);
   const weekAverage = useMemo(() => averageNutrition(weekLogs), [weekLogs]);
+  const todayAnalysisLog = useMemo(() => byDate.get(formatDate(new Date())), [byDate]);
+  const localInsight = useMemo(() => buildLocalInsight(todayAnalysisLog, safeGoals, weekAverage), [todayAnalysisLog, safeGoals, weekAverage]);
 
   const bestDay = useMemo(() => {
-    return logs
+    return mergedLogs
       .map((log) => ({ log, pct: calcGoalProgressPercent(log.totalNutrition ?? EMPTY_TOTAL, log.goals ?? safeGoals) }))
       .sort((a, b) => b.pct - a.pct)[0];
-  }, [logs, safeGoals]);
+  }, [mergedLogs, safeGoals]);
 
   const frequentFoods = useMemo(() => {
     const counts = new Map<string, { name: string; emoji: string; count: number }>();
-    logs.forEach((log) => {
+    mergedLogs.forEach((log) => {
       log.entries.forEach((entry) => {
         const cleanName = entry.foodName.replace(/\s+\(.+\)$/, '');
         const current = counts.get(cleanName);
@@ -157,7 +202,7 @@ export function AnalysisScreen() {
       });
     });
     return Array.from(counts.values()).sort((a, b) => b.count - a.count).slice(0, 5);
-  }, [logs]);
+  }, [mergedLogs]);
 
   const visibleMicros = useMemo(() => (
     MICRO_NUTRIENTS
@@ -167,6 +212,27 @@ export function AnalysisScreen() {
       }))
       .filter((nutrient) => (nutrient.value ?? 0) > 0)
   ), [monthAverage]);
+
+  async function handleGenerateInsight() {
+    if (!user || mergedLogs.length === 0) return;
+    if (!isFirebaseConfigured || user.id === 'dev_user') {
+      setInsight(localInsight);
+      return;
+    }
+    setInsightLoading(true);
+    try {
+      const generated = await generateNutritionInsights({ logs: mergedLogs, goals: safeGoals, profile });
+      setInsight(generated.tips.length > 0 ? generated : localInsight);
+    } catch (error) {
+      console.warn('Nutrition insight generation failed', error);
+      if (isAiLimitError(error)) {
+        Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
+      }
+      setInsight(localInsight);
+    } finally {
+      setInsightLoading(false);
+    }
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -184,7 +250,7 @@ export function AnalysisScreen() {
             <ActivityIndicator color={Colors.green400} />
             <Text style={styles.emptyText}>Carregando análise...</Text>
           </View>
-        ) : logs.length === 0 ? (
+        ) : mergedLogs.length === 0 ? (
           <View style={styles.emptyBox}>
             <Text style={styles.emptyTitle}>Ainda não há dados suficientes</Text>
             <Text style={styles.emptyText}>Registre refeições por alguns dias para comparar evolução, médias e alimentos mais consumidos.</Text>
@@ -192,10 +258,26 @@ export function AnalysisScreen() {
         ) : (
           <>
             <View style={styles.statsGrid}>
-              <StatCard label="Dias registrados" value={String(logs.length)} hint="até 31 dias" />
+              <StatCard label="Dias registrados" value={String(mergedLogs.length)} hint="até 31 dias" />
               <StatCard label="Média diária" value={`${monthAverage.kcal} kcal`} hint="no período salvo" />
               <StatCard label="Média semanal" value={`${weekAverage.kcal} kcal`} hint="últimos 7 dias" />
               <StatCard label="Melhor dia" value={bestDay ? `${bestDay.pct}%` : '0%'} hint={bestDay?.log.date ?? 'sem registro'} />
+            </View>
+
+            <View style={styles.section}>
+              <View style={styles.insightHeader}>
+                <View style={styles.insightTitleWrap}>
+                  <Text style={styles.sectionTitle}>Dica inteligente</Text>
+                  <Text style={styles.insightSub}>Compara hoje, metas e histórico recente.</Text>
+                </View>
+                <TouchableOpacity style={styles.insightBtn} onPress={handleGenerateInsight} disabled={insightLoading}>
+                  {insightLoading ? <ActivityIndicator color={Colors.white} size="small" /> : <Text style={styles.insightBtnText}>Gerar IA</Text>}
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.insightSummary}>{(insight ?? localInsight).summary}</Text>
+              {(insight ?? localInsight).tips.map((tip) => (
+                <Text key={tip} style={styles.insightTip}>- {tip}</Text>
+              ))}
             </View>
 
             <View style={styles.section}>
@@ -289,6 +371,13 @@ const styles = StyleSheet.create({
   statHint: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 3 },
   section: { backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.sm },
   sectionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, marginBottom: Spacing.md },
+  insightHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm, marginBottom: Spacing.sm },
+  insightTitleWrap: { flex: 1 },
+  insightSub: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -Spacing.sm },
+  insightBtn: { minWidth: 86, minHeight: 36, alignItems: 'center', justifyContent: 'center', borderRadius: Radius.md, backgroundColor: Colors.green600, paddingHorizontal: Spacing.md },
+  insightBtnText: { color: Colors.white, fontSize: Typography.sm, fontWeight: Typography.bold },
+  insightSummary: { fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.semibold, lineHeight: 20, marginBottom: Spacing.xs },
+  insightTip: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 20, marginTop: 3 },
   weekChart: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', height: 170 },
   dayBarItem: { alignItems: 'center', flex: 1 },
   dayBarTrack: { width: 22, height: 110, borderRadius: 12, backgroundColor: Colors.gray50, justifyContent: 'flex-end', overflow: 'hidden' },

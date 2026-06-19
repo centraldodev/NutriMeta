@@ -103,10 +103,68 @@ function normalizeName(name: string) {
   return name.trim().replace(/\s+/g, ' ');
 }
 
+function normalizeQuery(value: string) {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
+
+function knownBeverage(foodName: string): FoodItem | null {
+  const query = normalizeQuery(foodName);
+  if (/\bagua\b|\bwater\b/.test(query)) {
+    return {
+      id: customFoodId('Água'),
+      name: 'Água',
+      emoji: '💧',
+      aliases: ['água', 'agua', 'copo de água', 'garrafa de água'],
+      defaultUnit: 'mililitro',
+      nutritionPer: {
+        mililitro: { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
+        litro: { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
+      },
+    };
+  }
+
+  if (query.includes('refrigerante') || query.includes('coca') || query.includes('guarana') || query.includes('soda')) {
+    return {
+      id: customFoodId('Refrigerante'),
+      name: 'Refrigerante',
+      emoji: '🥤',
+      aliases: ['refrigerante', 'refri', 'coca', 'guaraná', 'guarana', 'soda'],
+      defaultUnit: 'mililitro',
+      nutritionPer: {
+        mililitro: { kcal: 0.42, protein: 0, carbs: 0.105, fat: 0, fiber: 0, sodium: 0.05, sugar: 0.105 },
+        litro: { kcal: 420, protein: 0, carbs: 105, fat: 0, fiber: 0, sodium: 50, sugar: 105 },
+      },
+    };
+  }
+
+  if (query.includes('suco')) {
+    return {
+      id: customFoodId('Suco'),
+      name: 'Suco',
+      emoji: '🧃',
+      aliases: ['suco', 'suco natural', 'suco de fruta'],
+      defaultUnit: 'mililitro',
+      nutritionPer: {
+        mililitro: { kcal: 0.45, protein: 0.005, carbs: 0.11, fat: 0, fiber: 0.002, sodium: 0.01, sugar: 0.085, potassium: 1.8, vitaminC: 0.25 },
+        litro: { kcal: 450, protein: 5, carbs: 110, fat: 0, fiber: 2, sodium: 10, sugar: 85, potassium: 1800, vitaminC: 250 },
+      },
+    };
+  }
+
+  return null;
+}
+
 export async function generateFoodNutrition(
   foodName: string,
   preferredUnit: QuantityUnit = 'porcao'
 ): Promise<FoodItem> {
+  const beverage = knownBeverage(foodName);
+  if (beverage) return beverage;
+
   const ai = getAI(app, { backend: new GoogleAIBackend() });
   const model = getGenerativeModel(ai, {
     model: 'gemini-3.5-flash',
@@ -144,7 +202,7 @@ Se o alimento for um prato preparado, estime uma porcao comum individual.
     fiber: 0,
   });
 
-  if (!name || nutrition.kcal <= 0) {
+  if (!name || (nutrition.kcal <= 0 && !normalizeQuery(name).includes('agua'))) {
     throw new Error('AI did not return valid food nutrition');
   }
 

@@ -18,13 +18,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle } from 'react-native-svg';
 import { MaterialIcons } from '@expo/vector-icons';
 
-import { Colors, MacroColors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
+import { Colors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
 import { isFirebaseConfigured } from '../config';
 import { saveUserProfile, signOut } from '../services/authService';
 import { refineDietGoals } from '../services/goalAiService';
-import { addWaterIntake } from '../services/nutritionService';
 import { useStore, selectGoals, selectNotifications, selectTodayLog, selectUnreadCount } from '../store';
 import { calcMacroGoals, formatKcal, formatGrams, macroPercent } from '../utils/nutrition';
+import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
 import {
   buildValidatedProfileValues,
   formatHeightInput,
@@ -54,6 +54,37 @@ const DEFAULT_GOALS: MacroGoals = {
   sodium: 2300,
 };
 
+type NutritionGoalMode = 'target' | 'limit';
+
+type NutritionGoalRow = {
+  key: keyof FoodNutrition | 'waterMl';
+  label: string;
+  unit: string;
+  goal: number;
+  mode: NutritionGoalMode;
+  section: 'Energia e macros' | 'Limites' | 'Vitaminas e minerais';
+  overPct?: number;
+};
+
+function formatNutritionValue(value: number, unit: string): string {
+  const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
+  return `${String(rounded).replace('.', ',')}${unit}`;
+}
+
+function getNutritionGoalStatus(current: number, goal: number, mode: NutritionGoalMode, overPct = 110) {
+  const pct = goal > 0 ? Math.round((current / goal) * 100) : 0;
+
+  if (mode === 'limit') {
+    if (current > goal) return { pct, label: 'Passou', color: Colors.danger, bg: Colors.proteinL };
+    if (current > 0) return { pct, label: 'Bom', color: Colors.green600, bg: Colors.green50 };
+    return { pct, label: 'Sem consumo', color: Colors.gray400, bg: Colors.gray50 };
+  }
+
+  if (pct > overPct) return { pct, label: 'Passou', color: Colors.warning, bg: Colors.fatL };
+  if (pct >= 90) return { pct, label: 'Bom', color: Colors.green600, bg: Colors.green50 };
+  return { pct, label: 'Em progresso', color: Colors.info, bg: Colors.carbsL };
+}
+
 function RingChart({ pct, color }: { pct: number; color: string }) {
   const dash = (pct / 100) * CIRCUMFERENCE;
   const centerPoint = RING_SIZE / 2;
@@ -82,65 +113,57 @@ function RingChart({ pct, color }: { pct: number; color: string }) {
   );
 }
 
-function NutritionCard({
-  label,
-  emoji,
-  current,
-  goal,
-  unit,
-  color,
-  mode = 'target',
+function NutritionGoalTable({
+  rows,
+  totals,
+  waterMl,
 }: {
-  label: string;
-  emoji: string;
-  current: number;
-  goal: number;
-  unit: string;
-  color: string;
-  mode?: 'target' | 'limit';
+  rows: NutritionGoalRow[];
+  totals: FoodNutrition;
+  waterMl: number;
 }) {
-  const pct = macroPercent(current, goal);
-  const overLimit = mode === 'limit' && current > goal;
-  const done = mode === 'target' ? pct >= 95 : current > 0 && current <= goal;
-  const displayColor = overLimit ? Colors.danger : color;
+  const sections = ['Energia e macros', 'Limites', 'Vitaminas e minerais'] as const;
 
   return (
-    <View style={[styles.macroCard, (done || overLimit) && { borderColor: displayColor }]}>
-      <View style={styles.macroCardTop}>
-        <Text style={styles.macroLabel}>{emoji} {label}</Text>
-        <Text style={[styles.macroPct, { color: displayColor }]}>{pct}%</Text>
+    <View style={styles.nutritionPanel}>
+      <View style={styles.nutritionHeader}>
+        <View>
+          <Text style={styles.nutritionTitle}>Metas e nutrientes</Text>
+          <Text style={styles.nutritionSubtitle}>Resumo diário no estilo rótulo nutricional</Text>
+        </View>
       </View>
-      <Text style={[styles.macroVal, { color: displayColor }]}>
-        {Math.round(current)}{unit}
-      </Text>
-      <Text style={styles.macroGoal}>
-        {mode === 'limit' ? 'limite' : 'meta'}: {Math.round(goal)}{unit}
-      </Text>
-      <View style={styles.macroBarBg}>
-        <View style={[styles.macroBarFill, { width: `${pct}%`, backgroundColor: displayColor }]} />
-      </View>
-      {overLimit && <Text style={[styles.doneBadge, { color: Colors.danger }]}>Acima do limite</Text>}
-      {done && !overLimit && <Text style={[styles.doneBadge, { color: displayColor }]}>Dentro da meta</Text>}
-    </View>
-  );
-}
 
-function MealItem({ emoji, name, nutrition }: {
-  emoji: string;
-  name: string;
-  time: string;
-  nutrition: FoodNutrition;
-}) {
-  return (
-    <View style={styles.mealItem}>
-      <Text style={styles.mealEmoji}>{emoji}</Text>
-      <View style={styles.mealInfo}>
-        <Text style={styles.mealName}>{name}</Text>
-        <Text style={styles.mealMacros}>
-          P:{Math.round(nutrition.protein)}g · C:{Math.round(nutrition.carbs)}g · G:{Math.round(nutrition.fat)}g · Fib:{Math.round(nutrition.fiber)}g
-        </Text>
-      </View>
-      <Text style={styles.mealKcal}>{Math.round(nutrition.kcal)} kcal</Text>
+      {sections.map((section) => {
+        const sectionRows = rows.filter((row) => row.section === section);
+        return (
+          <View key={section} style={styles.nutritionSection}>
+            <Text style={styles.nutritionSectionTitle}>{section}</Text>
+            {sectionRows.map((row) => {
+              const current = row.key === 'waterMl' ? waterMl : ((totals[row.key] as number | undefined) ?? 0);
+              const status = getNutritionGoalStatus(current, row.goal, row.mode, row.overPct);
+              const barPct = Math.min(status.pct, 100);
+
+              return (
+                <View key={row.key} style={styles.nutritionRow}>
+                  <View style={styles.nutritionRowTop}>
+                    <Text style={styles.nutritionName}>{row.label}</Text>
+                    <Text style={styles.nutritionValues}>
+                      {formatNutritionValue(current, row.unit)}
+                      <Text style={styles.nutritionGoalText}> / {formatNutritionValue(row.goal, row.unit)}</Text>
+                    </Text>
+                  </View>
+                  <View style={styles.nutritionMetaRow}>
+                    <View style={styles.nutritionBarBg}>
+                      <View style={[styles.nutritionBarFill, { width: `${barPct}%`, backgroundColor: status.color }]} />
+                    </View>
+                    <Text style={[styles.nutritionStatus, { color: status.color, backgroundColor: status.bg }]}>{status.label}</Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -288,6 +311,10 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
       setAiReason(recommendation.rationale);
     } catch (e) {
       console.warn('AI goal refinement failed', e);
+      if (isAiLimitError(e)) {
+        Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
+        return;
+      }
       Alert.alert('IA indisponível', 'Não consegui refinar suas metas agora. As metas calculadas continuam disponíveis.');
     } finally {
       setAiLoading(false);
@@ -675,6 +702,27 @@ export function HomeScreen({
   );
 
   const safeGoals: MacroGoals = { ...DEFAULT_GOALS, ...(goals ?? {}) };
+  const nutritionGoalRows = useMemo<NutritionGoalRow[]>(() => [
+    { key: 'kcal', label: 'Calorias', unit: ' kcal', goal: safeGoals.kcal, mode: 'target', section: 'Energia e macros' },
+    { key: 'protein', label: 'Proteína', unit: 'g', goal: safeGoals.protein, mode: 'target', section: 'Energia e macros', overPct: 130 },
+    { key: 'carbs', label: 'Carboidratos', unit: 'g', goal: safeGoals.carbs, mode: 'target', section: 'Energia e macros', overPct: 120 },
+    { key: 'fat', label: 'Gorduras', unit: 'g', goal: safeGoals.fat, mode: 'target', section: 'Energia e macros', overPct: 120 },
+    { key: 'fiber', label: 'Fibras', unit: 'g', goal: safeGoals.fiber, mode: 'target', section: 'Energia e macros', overPct: 160 },
+    { key: 'waterMl', label: 'Água', unit: 'ml', goal: safeGoals.water, mode: 'target', section: 'Energia e macros', overPct: 140 },
+    { key: 'sugar', label: 'Açúcar', unit: 'g', goal: safeGoals.sugar, mode: 'limit', section: 'Limites' },
+    { key: 'sodium', label: 'Sódio', unit: 'mg', goal: safeGoals.sodium, mode: 'limit', section: 'Limites' },
+    { key: 'calcium', label: 'Cálcio', unit: 'mg', goal: 1300, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'iron', label: 'Ferro', unit: 'mg', goal: 18, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'potassium', label: 'Potássio', unit: 'mg', goal: 4700, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'magnesium', label: 'Magnésio', unit: 'mg', goal: 420, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'zinc', label: 'Zinco', unit: 'mg', goal: 11, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'vitaminA', label: 'Vitamina A', unit: 'mcg', goal: 900, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'vitaminC', label: 'Vitamina C', unit: 'mg', goal: 90, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'vitaminD', label: 'Vitamina D', unit: 'mcg', goal: 20, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'vitaminE', label: 'Vitamina E', unit: 'mg', goal: 15, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'vitaminB12', label: 'Vitamina B12', unit: 'mcg', goal: 2.4, mode: 'target', section: 'Vitaminas e minerais' },
+    { key: 'folate', label: 'Folato', unit: 'mcg', goal: 400, mode: 'target', section: 'Vitaminas e minerais' },
+  ], [safeGoals]);
   const waterMl = todayLog?.waterMl ?? 0;
   const kcalPct = macroPercent(totals.kcal, safeGoals.kcal);
   const hour = new Date().getHours();
@@ -768,39 +816,7 @@ export function HomeScreen({
           </View>
         </View>
 
-        <View style={styles.macroGrid}>
-          <NutritionCard label="Proteína" emoji="🥩" current={totals.protein} goal={safeGoals.protein} unit="g" color={MacroColors.protein.primary} />
-          <NutritionCard label="Carboidratos" emoji="🌾" current={totals.carbs} goal={safeGoals.carbs} unit="g" color={MacroColors.carbs.primary} />
-          <NutritionCard label="Gorduras" emoji="🫒" current={totals.fat} goal={safeGoals.fat} unit="g" color={MacroColors.fat.primary} />
-          <NutritionCard label="Fibras" emoji="🥦" current={totals.fiber} goal={safeGoals.fiber} unit="g" color={MacroColors.fiber.primary} />
-          <NutritionCard label="Açúcar" emoji="🍬" current={totals.sugar ?? 0} goal={safeGoals.sugar} unit="g" color={Colors.purple} mode="limit" />
-          <NutritionCard label="Sódio" emoji="🧂" current={totals.sodium ?? 0} goal={safeGoals.sodium} unit="mg" color={Colors.warning} mode="limit" />
-          <NutritionCard label="Água" emoji="💧" current={waterMl} goal={safeGoals.water} unit="ml" color={Colors.info} />
-          <NutritionCard label="Calorias" emoji="⚡" current={totals.kcal} goal={safeGoals.kcal} unit="" color={Colors.green400} />
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Refeições de hoje</Text>
-          {(!todayLog || todayLog.entries.length === 0) ? (
-            <View style={styles.emptyState}>
-              <MaterialIcons name="restaurant" size={42} color={Colors.gray400} />
-              <Text style={styles.emptyText}>Nenhuma refeição registrada ainda.</Text>
-              <Text style={styles.emptyHint}>Vá para a aba Registrar e adicione sua primeira refeição!</Text>
-            </View>
-          ) : (
-            <View style={styles.mealList}>
-              {todayLog.entries.slice().reverse().map((entry) => (
-                <MealItem
-                  key={entry.id}
-                  emoji={entry.emoji}
-                  name={entry.foodName}
-                  time={new Date(entry.addedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                  nutrition={entry.nutrition}
-                />
-              ))}
-            </View>
-          )}
-        </View>
+        <NutritionGoalTable rows={nutritionGoalRows} totals={totals} waterMl={waterMl} />
       </ScrollView>
 
       <SettingsModal visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
@@ -893,45 +909,50 @@ const styles = StyleSheet.create({
   remainVal: { fontSize: Typography.lg, fontWeight: Typography.bold },
   remainLabel: { fontSize: Typography.xs, color: Colors.gray400 },
 
-  macroGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.base,
+  nutritionPanel: {
+    marginHorizontal: Spacing.base,
     marginBottom: Spacing.sm,
-    justifyContent: 'space-between',
-  },
-  macroCard: {
-    width: '48%',
     backgroundColor: Colors.white,
     borderRadius: Radius.lg,
-    padding: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.border,
+    overflow: 'hidden',
     ...Shadows.sm,
   },
-  macroCardTop: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: Spacing.sm, gap: Spacing.xs },
-  macroLabel: { fontSize: Typography.xs, fontWeight: Typography.semibold, color: Colors.gray400, flex: 1 },
-  macroPct: { fontSize: Typography.xs, fontWeight: Typography.bold },
-  macroVal: { fontSize: Typography.xxl, fontWeight: Typography.bold },
-  macroGoal: { fontSize: Typography.xs, color: Colors.gray400 },
-  macroBarBg: { height: 5, backgroundColor: Colors.gray50, borderRadius: 3, marginTop: Spacing.sm },
-  macroBarFill: { height: 5, borderRadius: 3 },
-  doneBadge: { fontSize: Typography.xs, fontWeight: Typography.semibold, marginTop: 4 },
+  nutritionHeader: { padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  nutritionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, color: Colors.gray800 },
+  nutritionSubtitle: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
+  nutritionSection: { borderBottomWidth: 1, borderBottomColor: Colors.border },
+  nutritionSectionTitle: {
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    paddingBottom: 6,
+    fontSize: Typography.xs,
+    fontWeight: Typography.bold,
+    color: Colors.green600,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    backgroundColor: Colors.green50,
+  },
+  nutritionRow: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
+  nutritionRowTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  nutritionName: { flex: 1, fontSize: Typography.sm, fontWeight: Typography.semibold, color: Colors.gray800 },
+  nutritionValues: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray800 },
+  nutritionGoalText: { fontSize: Typography.xs, fontWeight: Typography.regular, color: Colors.gray400 },
+  nutritionMetaRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: 6 },
+  nutritionBarBg: { flex: 1, height: 6, backgroundColor: Colors.gray50, borderRadius: Radius.full, overflow: 'hidden' },
+  nutritionBarFill: { height: 6, borderRadius: Radius.full },
+  nutritionStatus: {
+    minWidth: 78,
+    overflow: 'hidden',
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 3,
+    fontSize: Typography.xs,
+    fontWeight: Typography.bold,
+    textAlign: 'center',
+  },
 
-  section: { paddingHorizontal: Spacing.base },
-  sectionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, marginBottom: Spacing.sm },
-  mealList: { backgroundColor: Colors.white, borderRadius: Radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
-  mealItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  mealEmoji: { fontSize: 26, width: 40, textAlign: 'center' },
-  mealInfo: { flex: 1 },
-  mealName: { fontSize: Typography.md, fontWeight: Typography.semibold },
-  mealMacros: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
-  mealKcal: { fontSize: Typography.md, fontWeight: Typography.bold, color: Colors.gray600 },
-
-  emptyState: { alignItems: 'center', padding: Spacing.xl },
-  emptyText: { fontSize: Typography.md, fontWeight: Typography.medium, textAlign: 'center' },
-  emptyHint: { fontSize: Typography.sm, color: Colors.gray400, textAlign: 'center', marginTop: Spacing.sm },
 });
 
 const modalStyles = StyleSheet.create({

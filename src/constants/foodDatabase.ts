@@ -9,13 +9,31 @@ export function parseQuantityFromText(text: string): {
 } {
   const t = text.toLowerCase();
 
+  if (t.includes('litro') || t.includes('litros')) {
+    return { quantity: extractNumber(t) || 1, unit: 'litro' };
+  }
+  if (t.includes('ml') || t.includes('mililitro')) {
+    return { quantity: extractNumber(t) || 200, unit: 'mililitro' };
+  }
+  if (/\b\d+\s*g\b/.test(t) || t.includes('grama')) {
+    return { quantity: extractNumber(t) || 100, unit: 'grama' };
+  }
   if (t.includes('colher de sopa') || t.includes('colheres de sopa')) {
     return { quantity: extractNumber(t) || 1, unit: 'colher_sopa' };
   }
   if (t.includes('colher de chá') || t.includes('colheres de chá')) {
     return { quantity: extractNumber(t) || 1, unit: 'colher_cha' };
   }
-  if (t.includes('xícara') || t.includes('xicara') || t.includes('copo')) {
+  if (t.includes('garrafa')) {
+    return { quantity: (extractNumber(t) || 1) * 500, unit: 'mililitro' };
+  }
+  if (t.includes('lata')) {
+    return { quantity: (extractNumber(t) || 1) * 350, unit: 'mililitro' };
+  }
+  if (t.includes('copo')) {
+    return { quantity: (extractNumber(t) || 1) * 200, unit: 'mililitro' };
+  }
+  if (t.includes('xícara') || t.includes('xicara')) {
     return { quantity: extractNumber(t) || 1, unit: 'xicara' };
   }
   if (t.includes('concha')) {
@@ -38,16 +56,6 @@ export function parseQuantityFromText(text: string): {
   if (t.includes('porção') || t.includes('porcao') || t.includes('porco')) {
     return { quantity: extractNumber(t) || 1, unit: 'porcao' };
   }
-  if (t.includes('litro') || t.includes('litros')) {
-    return { quantity: extractNumber(t) || 1, unit: 'litro' };
-  }
-  if (t.includes('ml') || t.includes('mililitro')) {
-    return { quantity: extractNumber(t) || 200, unit: 'mililitro' };
-  }
-  if (/\b\d+\s*g\b/.test(t) || t.includes('grama')) {
-    return { quantity: extractNumber(t) || 100, unit: 'grama' };
-  }
-
   return { quantity: 1, unit: 'porcao' };
 }
 

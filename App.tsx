@@ -8,20 +8,24 @@ import { AddMealScreen } from './src/screens/AddMealScreen';
 import { AnalysisScreen } from './src/screens/AnalysisScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
+import { NutritionistScreen } from './src/screens/NutritionistScreen';
 import { OnboardingScreen } from './src/screens/OnboardingScreen';
 import { RankingScreen } from './src/screens/RankingScreen';
 import { Colors, Radius, Spacing, Typography, Shadows } from './src/constants/theme';
 import { isFirebaseConfigured } from './src/config';
 import { useStore } from './src/store';
-import { getUserProfile, mapFirebaseUser, onAuthChange } from './src/services/authService';
+import { getUserAccount, getUserProfile, onAuthChange } from './src/services/authService';
 import { subscribeDailyLog } from './src/services/nutritionService';
 import { subscribeGroupNotifications } from './src/services/groupService';
-import { calcMacroGoals, formatDate } from './src/utils/nutrition';
+import { calcMacroGoals, formatDate, generateId } from './src/utils/nutrition';
 
 type MainTab = 'home' | 'addMeal' | 'analysis' | 'ranking';
 const MAIN_TAB_BAR_HEIGHT = 70;
 const WEB_FIXED_TAB_BAR_STYLE = Platform.OS === 'web'
   ? ({ position: 'fixed', left: 0, right: 0, marginLeft: 'auto', marginRight: 'auto' } as any)
+  : null;
+const WEB_FIXED_WATER_FAB_STYLE = Platform.OS === 'web'
+  ? ({ position: 'fixed' } as any)
   : null;
 
 function MainTabs() {
@@ -29,6 +33,7 @@ function MainTabs() {
   const [waterOpen, setWaterOpen] = useState(false);
   const insets = useSafeAreaInsets();
   const tabBarBottom = Platform.OS === 'web' ? Spacing.base : insets.bottom + Spacing.sm;
+  const waterFabBottom = tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm;
 
   const tabs = useMemo(
     () => [
@@ -42,36 +47,53 @@ function MainTabs() {
 
   const user = useStore((state) => state.user);
   const goals = useStore((state) => state.goals);
-  const addWater = useStore((state) => state.addWater);
+  const addEntry = useStore((state) => state.addEntry);
 
   async function handleAddWater(amountMl: number) {
     if (!user || !goals) return;
-    addWater(amountMl);
+    const payload = {
+      foodName: `Água (${amountMl} ml)`,
+      emoji: '💧',
+      quantity: amountMl,
+      unit: 'mililitro' as const,
+      nutrition: { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
+      waterMl: amountMl,
+      mealPeriod: 'hydration' as const,
+      source: 'manual' as const,
+    };
+
     if (isFirebaseConfigured && user.id !== 'dev_user') {
       try {
-        const { addWaterIntake } = await import('./src/services/nutritionService');
-        await addWaterIntake(user.id, goals, amountMl);
+        const { addMealEntry } = await import('./src/services/nutritionService');
+        const entry = await addMealEntry(user.id, goals, payload);
+        addEntry(entry);
       } catch (error) {
         console.warn('Failed to save water to Firebase', error);
+        addEntry({ ...payload, id: generateId(), userId: user.id, addedAt: new Date() });
       }
+      return;
     }
+
+    addEntry({ ...payload, id: generateId(), userId: user.id, addedAt: new Date() });
   }
 
   return (
     <View style={styles.appShell}>
       <View style={[styles.content, { paddingBottom: tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm }]}>
         {tab === 'home' && <HomeScreen waterOpen={waterOpen} onWaterClose={() => setWaterOpen(false)} onAddWater={handleAddWater} />}
-        {tab === 'addMeal' && <AddMealScreen />}
+        {tab === 'addMeal' && <AddMealScreen onMealAdded={() => setTab('analysis')} fabBottomOffset={waterFabBottom} />}
         {tab === 'analysis' && <AnalysisScreen />}
-        {tab === 'ranking' && <RankingScreen />}
+        {tab === 'ranking' && <RankingScreen fabBottomOffset={waterFabBottom} />}
       </View>
 
-      <TouchableOpacity 
-        style={[styles.waterFab, { bottom: MAIN_TAB_BAR_HEIGHT + Spacing.md }]} 
-        onPress={() => setWaterOpen(true)}
-      >
-        <MaterialIcons name="local-drink" size={28} color={Colors.white} />
-      </TouchableOpacity>
+      {tab === 'home' && (
+        <TouchableOpacity
+          style={[styles.waterFab, WEB_FIXED_WATER_FAB_STYLE, { bottom: waterFabBottom }]}
+          onPress={() => setWaterOpen(true)}
+        >
+          <MaterialIcons name="local-drink" size={28} color={Colors.white} />
+        </TouchableOpacity>
+      )}
 
       <View style={[styles.tabBar, WEB_FIXED_TAB_BAR_STYLE, { bottom: tabBarBottom }]}>
         {tabs.map((item) => {
@@ -80,7 +102,10 @@ function MainTabs() {
             <TouchableOpacity
               key={item.key}
               style={[styles.tabButton, active && styles.tabButtonActive]}
-              onPress={() => setTab(item.key)}
+              onPress={() => {
+                if (item.key !== 'home') setWaterOpen(false);
+                setTab(item.key);
+              }}
             >
               <MaterialIcons
                 name={item.icon}
@@ -119,8 +144,14 @@ export default function App() {
         return;
       }
 
-      const mappedUser = mapFirebaseUser(firebaseUser);
+      const mappedUser = await getUserAccount(firebaseUser);
       setUser(mappedUser);
+
+      if (mappedUser.role === 'nutritionist') {
+        setProfile(null);
+        setAuthReady(true);
+        return;
+      }
 
       const loadedProfile = await getUserProfile(mappedUser.id);
       if (!mounted) return;
@@ -161,11 +192,13 @@ export default function App() {
 
   let screen = <LoginScreen onSuccess={() => undefined} />;
 
-  if (user && !profile) {
+  if (user?.role === 'nutritionist') {
+    screen = <NutritionistScreen />;
+  } else if (user && !profile) {
     screen = <OnboardingScreen onComplete={() => undefined} />;
   }
 
-  if (user && profile) {
+  if (user && profile && user.role !== 'nutritionist') {
     screen = <MainTabs />;
   }
 

@@ -36,6 +36,10 @@ function dailyLogId(userId: string, date: string) {
   return `${userId}_${date}`;
 }
 
+function sumEntryWater(entries: MealEntry[]): number {
+  return entries.reduce((sum, entry) => sum + (entry.waterMl ?? 0), 0);
+}
+
 export async function getDailyLog(
   userId: string,
   date: string
@@ -123,6 +127,7 @@ export async function addMealEntry(
       date,
       entries:         [newEntry],
       totalNutrition:  total,
+      waterMl:         newEntry.waterMl ?? 0,
       goals,
       completedGoals:  getCompletedGoals(total, goals),
       updatedAt:       new Date(),
@@ -132,9 +137,11 @@ export async function addMealEntry(
     const data       = existing.data() as DailyLog;
     const allEntries = [...(data.entries ?? []), newEntry];
     const total      = sumNutrition(allEntries);
+    const waterMl    = ((data.waterMl ?? 0) as number) + (newEntry.waterMl ?? 0);
     await updateDoc(ref, {
       entries:        arrayUnion(newEntry),
       totalNutrition: total,
+      waterMl,
       completedGoals: getCompletedGoals(total, goals),
       updatedAt:      serverTimestamp(),
     });
@@ -154,12 +161,16 @@ export async function removeMealEntry(
   if (!snap.exists()) return;
 
   const data       = snap.data() as DailyLog;
-  const allEntries = (data.entries ?? []).filter((e) => e.id !== entry.id);
+  const previousEntries = data.entries ?? [];
+  const allEntries = previousEntries.filter((e) => e.id !== entry.id);
   const total      = sumNutrition(allEntries);
+  const legacyWaterMl = Math.max(0, ((data.waterMl ?? 0) as number) - sumEntryWater(previousEntries));
+  const waterMl = legacyWaterMl + sumEntryWater(allEntries);
 
   await updateDoc(ref, {
     entries:        allEntries,
     totalNutrition: total,
+    waterMl,
     completedGoals: getCompletedGoals(total, goals),
     updatedAt:      serverTimestamp(),
   });

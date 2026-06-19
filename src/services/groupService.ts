@@ -1,6 +1,7 @@
 import {
   doc,
   getDoc,
+  deleteDoc,
   addDoc,
   setDoc,
   updateDoc,
@@ -13,11 +14,13 @@ import {
   serverTimestamp,
   Unsubscribe,
 } from 'firebase/firestore';
-import { db, COLLECTIONS } from './firebase';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { db, storage, COLLECTIONS } from './firebase';
 import { getRecentDailyLogs } from './nutritionService';
 import {
   Group,
   CommunityComment,
+  CommunityPost,
   CommunityPrivacy,
   GroupMemberStats,
   GroupNotification,
@@ -33,6 +36,103 @@ import {
   getInitials,
 } from '../utils/nutrition';
 import { AvatarColors } from '../constants/theme';
+
+// ─── Community Posts ─────────────────────────────────────────────────────────
+
+const GLOBAL_COMMUNITY_ID = 'global';
+const COMMUNITY_POSTS_COLLECTION = COLLECTIONS.communityPosts || 'communityPosts';
+const COMMUNITY_FOLLOWS_COLLECTION = COLLECTIONS.communityFollows || 'communityFollows';
+const COMMUNITY_COMMENTS_COLLECTION = COLLECTIONS.communityComments || 'communityComments';
+
+async function uploadCommunityImage(authorId: string, imageUri: string): Promise<string> {
+  const response = await fetch(imageUri);
+  const blob = await response.blob();
+  const imageRef = ref(storage, `communityPosts/${GLOBAL_COMMUNITY_ID}/${authorId}_${Date.now()}.jpg`);
+  await uploadBytes(imageRef, blob, { contentType: 'image/jpeg' });
+  return getDownloadURL(imageRef);
+}
+
+export async function addCommunityPost({
+  authorId,
+  authorName,
+  imageUri,
+  caption,
+  nutrition,
+  foodNames,
+  mealPeriod,
+}: {
+  authorId: string;
+  authorName: string;
+  imageUri: string;
+  caption?: string;
+  nutrition: FoodNutrition;
+  foodNames: string[];
+  mealPeriod: CommunityPost['mealPeriod'];
+}): Promise<CommunityPost> {
+  const imageUrl = await uploadCommunityImage(authorId, imageUri);
+  const post: CommunityPost = {
+    id: generateId(),
+    groupId: GLOBAL_COMMUNITY_ID,
+    authorId,
+    authorName,
+    authorInitials: getInitials(authorName),
+    imageUrl,
+    caption,
+    nutrition,
+    foodNames,
+    mealPeriod,
+    createdAt: new Date(),
+  };
+
+  await setDoc(doc(db, COMMUNITY_POSTS_COLLECTION, post.id), {
+    ...post,
+    createdAt: serverTimestamp(),
+  });
+
+  return post;
+}
+
+export function subscribeCommunityPosts(
+  onUpdate: (posts: CommunityPost[]) => void
+): Unsubscribe {
+  const q = collection(db, COMMUNITY_POSTS_COLLECTION);
+  return onSnapshot(q, (snap) => {
+    onUpdate(snap.docs.map((docSnap) => {
+      const data = docSnap.data();
+      return {
+        id: docSnap.id,
+        ...data,
+        createdAt: data.createdAt?.toDate() ?? new Date(),
+      } as CommunityPost;
+    }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 80));
+  });
+}
+
+export function subscribeFollowing(
+  userId: string,
+  onUpdate: (followingIds: string[]) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, COMMUNITY_FOLLOWS_COLLECTION),
+    where('followerId', '==', userId)
+  );
+  return onSnapshot(q, (snap) => {
+    onUpdate(snap.docs.map((docSnap) => docSnap.data().followingId as string));
+  });
+}
+
+export async function followCommunityUser(followerId: string, followingId: string): Promise<void> {
+  if (followerId === followingId) return;
+  await setDoc(doc(db, COMMUNITY_FOLLOWS_COLLECTION, `${followerId}_${followingId}`), {
+    followerId,
+    followingId,
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function unfollowCommunityUser(followerId: string, followingId: string): Promise<void> {
+  await deleteDoc(doc(db, COMMUNITY_FOLLOWS_COLLECTION, `${followerId}_${followingId}`));
+}
 
 // ─── Group CRUD ───────────────────────────────────────────────────────────────
 
@@ -171,7 +271,7 @@ export async function addCommunityComment(
   authorName: string,
   message: string
 ): Promise<void> {
-  await addDoc(collection(db, COLLECTIONS.communityComments), {
+  await addDoc(collection(db, COMMUNITY_COMMENTS_COLLECTION), {
     groupId,
     targetUserId,
     authorId,
@@ -186,7 +286,7 @@ export function subscribeCommunityComments(
   onUpdate: (comments: CommunityComment[]) => void
 ): Unsubscribe {
   const q = query(
-    collection(db, COLLECTIONS.communityComments),
+    collection(db, COMMUNITY_COMMENTS_COLLECTION),
     where('groupId', '==', groupId)
   );
   return onSnapshot(q, (snap) => {

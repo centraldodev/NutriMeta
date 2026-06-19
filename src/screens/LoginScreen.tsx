@@ -36,6 +36,7 @@ export function LoginScreen({ onSuccess }: Props) {
   const [name, setName]         = useState('');
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
+  const [accountRole, setAccountRole] = useState<'user' | 'nutritionist'>('user');
   const [loading, setLoading]   = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const setUser = useStore((s) => s.setUser);
@@ -90,7 +91,7 @@ export function LoginScreen({ onSuccess }: Props) {
       const user =
         mode === 'login'
           ? await loginWithEmail(email.trim(), password)
-          : await registerWithEmail(email.trim(), password, name.trim() || 'Usuário');
+          : await registerWithEmail(email.trim(), password, name.trim() || 'Usuário', accountRole);
       setUser(user);
       onSuccess();
     } catch (err: any) {
@@ -174,6 +175,30 @@ export function LoginScreen({ onSuccess }: Props) {
                   onChangeText={setName}
                   autoCapitalize="words"
                 />
+                <Text style={styles.label}>Tipo de acesso</Text>
+                <View style={styles.roleRow}>
+                  {([
+                    ['user', 'Paciente', 'Acompanha refeições e metas'],
+                    ['nutritionist', 'Nutricionista', 'Acesso completo aos pacientes'],
+                  ] as const).map(([role, label, sub]) => {
+                    const active = accountRole === role;
+                    return (
+                      <TouchableOpacity
+                        key={role}
+                        style={[styles.roleCard, active && styles.roleCardActive]}
+                        onPress={() => setAccountRole(role)}
+                      >
+                        <MaterialIcons
+                          name={role === 'nutritionist' ? 'medical-services' : 'person'}
+                          size={22}
+                          color={active ? Colors.green600 : Colors.gray400}
+                        />
+                        <Text style={[styles.roleTitle, active && styles.roleTitleActive]}>{label}</Text>
+                        <Text style={styles.roleSub}>{sub}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </>
             )}
 
@@ -296,6 +321,20 @@ const styles = StyleSheet.create({
     fontSize: Typography.base, color: Colors.gray800,
     marginBottom: Spacing.md,
   },
+  roleRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.md },
+  roleCard: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    minHeight: 96,
+    backgroundColor: Colors.white,
+  },
+  roleCardActive: { borderColor: Colors.green400, backgroundColor: Colors.green50 },
+  roleTitle: { marginTop: 4, fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.bold },
+  roleTitleActive: { color: Colors.green600 },
+  roleSub: { marginTop: 2, fontSize: Typography.xs, color: Colors.gray400, lineHeight: 15 },
 
   btnPrimary: {
     backgroundColor: Colors.green400,

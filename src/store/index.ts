@@ -112,6 +112,7 @@ export const useStore = create<AppStore>((set) => ({
             date,
             entries,
             totalNutrition,
+            waterMl: entry.waterMl ?? 0,
             goals: state.goals ?? {
               kcal: 0,
               protein: 0,
@@ -133,6 +134,7 @@ export const useStore = create<AppStore>((set) => ({
           ...state.todayLog,
           entries,
           totalNutrition,
+          waterMl: (state.todayLog.waterMl ?? 0) + (entry.waterMl ?? 0),
           completedGoals,
           updatedAt: new Date(),
         },
@@ -142,6 +144,7 @@ export const useStore = create<AppStore>((set) => ({
   removeEntry: (entryId) =>
     set((state) => {
       if (!state.todayLog) return {};
+      const removedEntry = state.todayLog.entries.find((e) => e.id === entryId);
       const entries = state.todayLog.entries.filter((e) => e.id !== entryId);
       const totalNutrition = sumNutrition(entries);
       return {
@@ -149,6 +152,7 @@ export const useStore = create<AppStore>((set) => ({
           ...state.todayLog,
           entries,
           totalNutrition,
+          waterMl: Math.max(0, (state.todayLog.waterMl ?? 0) - (removedEntry?.waterMl ?? 0)),
           completedGoals: state.goals
             ? getCompletedGoals(totalNutrition, state.goals)
             : [],

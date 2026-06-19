@@ -9,6 +9,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, Radius, Shadows } from '../constants/theme';
 import { useStore, selectGoals, selectSavedMeals } from '../store';
 import { addMealEntry, incrementMealUsage, removeMealEntry } from '../services/nutritionService';
+import { addCommunityPost } from '../services/groupService';
 import { analyzeMealPhoto, PhotoMealAiItem } from '../services/photoMealAiService';
 import { customFoodId, getCustomFoods, saveCustomFood } from '../services/customFoodService';
 import { generateFoodNutrition } from '../services/foodNutritionAiService';
@@ -17,11 +18,16 @@ import {
   calculateNutrition,
   UNIT_LABELS,
 } from '../constants/foodDatabase';
-import { FoodItem, MealEntry, MealPeriod, QuantityUnit } from '../types';
-import { generateId, formatDate } from '../utils/nutrition';
+import { FoodItem, FoodNutrition, MealEntry, MealPeriod, QuantityUnit } from '../types';
+import { formatNutritionDetails, generateId, formatDate, sumNutrition } from '../utils/nutrition';
+import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
 import { isFirebaseConfigured } from '../config';
 
 declare const require: (name: string) => any;
+
+const enrichedFoodIdsThisSession = new Set<string>();
+const ENRICH_FOODS_PER_LOAD = 1;
+let foodEnrichmentPaused = false;
 
 type SpeechRecognitionModule = {
   addListener: (eventName: string, listener: (event: any) => void) => { remove: () => void };
@@ -44,6 +50,66 @@ function getFoodUnits(food: FoodItem | null): QuantityUnit[] {
   return Object.keys(food.nutritionPer) as QuantityUnit[];
 }
 
+function hasExpandedNutrition(food: FoodItem): boolean {
+  const nutrition = food.nutritionPer[food.defaultUnit] ?? Object.values(food.nutritionPer)[0];
+  if (!nutrition) return false;
+  const expandedKeys: (keyof FoodNutrition)[] = [
+    'sodium',
+    'sugar',
+    'calcium',
+    'iron',
+    'potassium',
+    'magnesium',
+    'zinc',
+    'vitaminA',
+    'vitaminC',
+    'vitaminD',
+    'vitaminE',
+    'vitaminB12',
+    'folate',
+  ];
+  return expandedKeys.filter((key) => ((nutrition[key] as number | undefined) ?? 0) > 0).length >= 6;
+}
+
+function mergeExpandedFoodNutrition(original: FoodItem, generated: FoodItem): FoodItem {
+  const originalUnit = original.defaultUnit;
+  const originalNutrition = original.nutritionPer[originalUnit] ?? Object.values(original.nutritionPer)[0];
+  const generatedNutrition = generated.nutritionPer[generated.defaultUnit] ?? Object.values(generated.nutritionPer)[0];
+
+  if (!originalNutrition || !generatedNutrition) return original;
+
+  const fillOptional = (key: keyof FoodNutrition) => {
+    const current = originalNutrition[key] as number | undefined;
+    const next = generatedNutrition[key] as number | undefined;
+    return current && current > 0 ? current : next;
+  };
+
+  return {
+    ...original,
+    emoji: original.emoji || generated.emoji,
+    aliases: Array.from(new Set([...original.aliases, ...generated.aliases, generated.name.toLowerCase()])),
+    nutritionPer: {
+      ...original.nutritionPer,
+      [originalUnit]: {
+        ...originalNutrition,
+        sodium: fillOptional('sodium'),
+        sugar: fillOptional('sugar'),
+        calcium: fillOptional('calcium'),
+        iron: fillOptional('iron'),
+        potassium: fillOptional('potassium'),
+        magnesium: fillOptional('magnesium'),
+        zinc: fillOptional('zinc'),
+        vitaminA: fillOptional('vitaminA'),
+        vitaminC: fillOptional('vitaminC'),
+        vitaminD: fillOptional('vitaminD'),
+        vitaminE: fillOptional('vitaminE'),
+        vitaminB12: fillOptional('vitaminB12'),
+        folate: fillOptional('folate'),
+      },
+    },
+  };
+}
+
 function findAnyFood(query: string, customFoods: FoodItem[] = []): FoodItem | undefined {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return undefined;
@@ -64,12 +130,33 @@ function searchFoods(query: string, customFoods: FoodItem[] = []): FoodItem[] {
   return customMatches;
 }
 
+function isWaterFood(food: Pick<FoodItem, 'name' | 'aliases'> | null): boolean {
+  if (!food) return false;
+  const terms = [food.name, ...food.aliases].map((term) =>
+    term
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+  );
+  return terms.some((term) => /\bagua\b|\bwater\b/.test(term));
+}
+
+export function getWaterMl(food: FoodItem | null, quantity: number, unit: QuantityUnit): number | undefined {
+  if (!isWaterFood(food)) return undefined;
+  if (unit === 'litro') return Math.round(quantity * 1000);
+  if (unit === 'mililitro') return Math.round(quantity);
+  if (unit === 'xicara') return Math.round(quantity * 200);
+  if (unit === 'porcao') return Math.round(quantity * 200);
+  if (unit === 'unidade') return Math.round(quantity * 200);
+  return undefined;
+}
+
 function parseQtyInput(value: string): number {
   const parsed = Number(value.replace(',', '.'));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-type MealDraft = {
+export type MealDraft = {
   key: string;
   food: FoodItem | null;
   foodText: string;
@@ -89,6 +176,7 @@ const MEAL_PERIODS: { key: MealPeriod; label: string; icon: string }[] = [
   { key: 'lunch', label: 'Almoço', icon: 'restaurant' },
   { key: 'dinner', label: 'Jantar', icon: 'nightlight' },
   { key: 'snack', label: 'Lanche', icon: 'bakery-dining' },
+  { key: 'hydration', label: 'Hidratação', icon: 'local-drink' },
 ];
 
 const MEAL_PERIOD_LABELS: Record<MealPeriod, string> = {
@@ -96,6 +184,7 @@ const MEAL_PERIOD_LABELS: Record<MealPeriod, string> = {
   lunch: 'Almoço',
   dinner: 'Jantar',
   snack: 'Lanche',
+  hydration: 'Hidratação',
 };
 
 function getDefaultMealPeriod(date = new Date()): MealPeriod {
@@ -127,7 +216,7 @@ const QUANTITY_WORDS: Record<string, number> = {
 };
 
 function hasExplicitUnit(text: string): boolean {
-  return /colher|colheres|xicara|xícara|copo|concha|fatia|fil[eé]|bife|ovo|ovos|unidade|por[cç][aã]o|grama|gramas|\d+\s*g\b|kg|ml|litro/.test(text.toLowerCase());
+  return /colher|colheres|xicara|xícara|copo|garrafa|lata|concha|fatia|fil[eé]|bife|ovo|ovos|unidade|por[cç][aã]o|grama|gramas|\d+\s*g\b|kg|ml|litro/.test(text.toLowerCase());
 }
 
 function extractSpokenNumber(text: string): number | null {
@@ -263,12 +352,15 @@ function recalcMealDraft(item: MealDraft, changes: Partial<MealDraft>): MealDraf
   }
   const unit = next.food.nutritionPer[next.unit] ? next.unit : next.food.defaultUnit;
   const quantity = next.quantity > 0 ? next.quantity : 1;
+  const adjustedQuantity = next.food.defaultUnit === 'mililitro' && unit === 'mililitro' && !next.food.nutritionPer[next.unit] && quantity === 1
+    ? 200
+    : quantity;
   return {
     ...next,
     foodFound: true,
     unit,
-    quantity,
-    nutrition: calculateNutrition(next.food, quantity, unit),
+    quantity: adjustedQuantity,
+    nutrition: calculateNutrition(next.food, adjustedQuantity, unit),
   };
 }
 
@@ -369,7 +461,10 @@ function AddMealModal({
       }
 
       const selectedUnit = food.nutritionPer[unit] ? unit : food.defaultUnit;
-      const parsedQuantity = parseQtyInput(quantity);
+      const typedQuantity = parseQtyInput(quantity);
+      const parsedQuantity = food.defaultUnit === 'mililitro' && selectedUnit === 'mililitro' && !food.nutritionPer[unit] && typedQuantity === 1
+        ? 200
+        : typedQuantity;
       const nutr = calculateNutrition(food, parsedQuantity, selectedUnit);
       const payload = {
         foodName:  `${food.name} (${parsedQuantity} ${UNIT_LABELS[selectedUnit]})`,
@@ -377,7 +472,8 @@ function AddMealModal({
         quantity:  parsedQuantity,
         unit:      selectedUnit,
         nutrition: nutr,
-        mealPeriod,
+        waterMl:   getWaterMl(food, parsedQuantity, selectedUnit),
+        mealPeriod: getWaterMl(food, parsedQuantity, selectedUnit) ? 'hydration' : mealPeriod,
         source:    'manual',
       } satisfies MealEntryPayload;
       let entry: MealEntry;
@@ -403,6 +499,10 @@ function AddMealModal({
       setAddedCount((count) => count + 1);
     } catch (error) {
       console.warn('AI food creation failed', error);
+      if (isAiLimitError(error)) {
+        Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
+        return;
+      }
       Alert.alert('Alimento não encontrado', 'Não consegui cadastrar este alimento automaticamente agora. Tente outro nome ou seja mais específico.');
     } finally {
       setSaving(false);
@@ -645,9 +745,19 @@ function VoiceModal({
         })
         .catch((error) => {
           console.warn('Voice AI food creation failed', error);
+          if (isAiLimitError(error)) {
+            Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
+          }
           setEditableDrafts((items) => items.map((draft) =>
             draft.key === item.key
-              ? { ...draft, resolving: false, resolveFailed: true, sourceNote: 'Não consegui cadastrar este alimento automaticamente.' }
+              ? {
+                  ...draft,
+                  resolving: false,
+                  resolveFailed: true,
+                  sourceNote: isAiLimitError(error)
+                    ? 'Limite de IA atingido. Revise o alimento manualmente.'
+                    : 'Não consegui cadastrar este alimento automaticamente.',
+                }
               : draft
           ));
         });
@@ -772,94 +882,99 @@ function VoiceModal({
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={[voiceModal.circle, listening && voiceModal.circleActive]}
-            onPress={toggle}
+          <ScrollView
+            style={modal.body}
+            contentContainerStyle={modal.bodyContent}
+            showsVerticalScrollIndicator
+            keyboardShouldPersistTaps="handled"
           >
-            <MaterialIcons name={listening ? 'stop' : 'mic'} size={40} color={listening ? Colors.white : Colors.purpleD} />
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={[voiceModal.circle, listening && voiceModal.circleActive]}
+              onPress={toggle}
+            >
+              <MaterialIcons name={listening ? 'stop' : 'mic'} size={40} color={listening ? Colors.white : Colors.purpleD} />
+            </TouchableOpacity>
 
-          <Text style={voiceModal.tip}>
-            {listening ? 'Ouvindo... fale agora' : 'Toque para começar a falar'}
-          </Text>
-
-          <View style={voiceModal.transcript}>
-            <Text style={voiceModal.transcriptText}>
-              {transcript || 'Aguardando...'}
+            <Text style={voiceModal.tip}>
+              {listening ? 'Ouvindo... fale agora' : 'Toque para começar a falar'}
             </Text>
-          </View>
 
-          <View style={voiceModal.previewBox}>
-            <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
-            <Text style={voiceModal.exTitle}>Itens detectados</Text>
-            {editableDrafts.length === 0 ? (
-              <Text style={voiceModal.previewEmpty}>Fale algo como: "4 colheres de arroz, 1 concha de feijão e 1 filé de frango".</Text>
-            ) : (
-              editableDrafts.map((item) => (
-                <View key={item.key} style={voiceModal.editCard}>
-                  <View style={voiceModal.editHeader}>
-                    <Text style={voiceModal.previewEmoji}>{item.food?.emoji ?? '?'}</Text>
-                    <View style={voiceModal.previewInfo}>
-                      <TextInput
-                        style={[voiceModal.foodInput, !item.foodFound && voiceModal.inputError]}
-                        value={item.foodText}
-                        onChangeText={(value) => updateDraftFood(item.key, value)}
-                        placeholder="Alimento"
-                        placeholderTextColor={Colors.gray400}
-                      />
-                      {!item.foodFound && <Text style={voiceModal.errorText}>{item.resolving ? 'Cadastrando com IA...' : 'Alimento ainda sem cadastro.'}</Text>}
+            <View style={voiceModal.transcript}>
+              <Text style={voiceModal.transcriptText}>
+                {transcript || 'Aguardando...'}
+              </Text>
+            </View>
+
+            <View style={voiceModal.previewBox}>
+              <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
+              <Text style={voiceModal.exTitle}>Itens detectados</Text>
+              {editableDrafts.length === 0 ? (
+                <Text style={voiceModal.previewEmpty}>Fale algo como: "4 colheres de arroz, 1 concha de feijão e 1 filé de frango".</Text>
+              ) : (
+                editableDrafts.map((item) => (
+                  <View key={item.key} style={voiceModal.editCard}>
+                    <View style={voiceModal.editHeader}>
+                      <Text style={voiceModal.previewEmoji}>{item.food?.emoji ?? '?'}</Text>
+                      <View style={voiceModal.previewInfo}>
+                        <TextInput
+                          style={[voiceModal.foodInput, !item.foodFound && voiceModal.inputError]}
+                          value={item.foodText}
+                          onChangeText={(value) => updateDraftFood(item.key, value)}
+                          placeholder="Alimento"
+                          placeholderTextColor={Colors.gray400}
+                        />
+                        {!item.foodFound && <Text style={voiceModal.errorText}>{item.resolving ? 'Cadastrando com IA...' : 'Alimento ainda sem cadastro.'}</Text>}
+                      </View>
+                      <TouchableOpacity style={voiceModal.removeBtn} onPress={() => removeDraft(item.key)}>
+                        <MaterialIcons name="close" size={18} color={Colors.gray600} />
+                      </TouchableOpacity>
                     </View>
-                    <TouchableOpacity style={voiceModal.removeBtn} onPress={() => removeDraft(item.key)}>
-                      <MaterialIcons name="close" size={18} color={Colors.gray600} />
-                    </TouchableOpacity>
-                  </View>
 
-                  <View style={voiceModal.editRow}>
-                    <View style={voiceModal.quantityEdit}>
-                      <Text style={voiceModal.smallLabel}>Qtd.</Text>
-                      <TextInput
-                        style={voiceModal.quantityInput}
-                        value={String(item.quantity).replace('.', ',')}
-                        onChangeText={(value) => updateDraftQuantity(item.key, value)}
-                        keyboardType="decimal-pad"
-                        placeholder="1"
-                        placeholderTextColor={Colors.gray400}
-                      />
+                    <View style={voiceModal.editRow}>
+                      <View style={voiceModal.quantityEdit}>
+                        <Text style={voiceModal.smallLabel}>Qtd.</Text>
+                        <TextInput
+                          style={voiceModal.quantityInput}
+                          value={String(item.quantity).replace('.', ',')}
+                          onChangeText={(value) => updateDraftQuantity(item.key, value)}
+                          keyboardType="decimal-pad"
+                          placeholder="1"
+                          placeholderTextColor={Colors.gray400}
+                        />
+                      </View>
+                      <View style={voiceModal.unitEdit}>
+                        <Text style={voiceModal.smallLabel}>Unidade</Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                          <View style={voiceModal.unitRow}>
+                            {getFoodUnits(item.food).map((unitOption) => (
+                              <TouchableOpacity
+                                key={unitOption}
+                                style={[voiceModal.unitMiniChip, item.unit === unitOption && voiceModal.unitMiniChipActive]}
+                                onPress={() => updateDraftUnit(item.key, unitOption)}
+                              >
+                                <Text style={[voiceModal.unitMiniText, item.unit === unitOption && voiceModal.unitMiniTextActive]}>
+                                  {UNIT_LABELS[unitOption]}
+                                </Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                        </ScrollView>
+                      </View>
                     </View>
-                    <View style={voiceModal.unitEdit}>
-                      <Text style={voiceModal.smallLabel}>Unidade</Text>
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                        <View style={voiceModal.unitRow}>
-                          {getFoodUnits(item.food).map((unitOption) => (
-                            <TouchableOpacity
-                              key={unitOption}
-                              style={[voiceModal.unitMiniChip, item.unit === unitOption && voiceModal.unitMiniChipActive]}
-                              onPress={() => updateDraftUnit(item.key, unitOption)}
-                            >
-                              <Text style={[voiceModal.unitMiniText, item.unit === unitOption && voiceModal.unitMiniTextActive]}>
-                                {UNIT_LABELS[unitOption]}
-                              </Text>
-                            </TouchableOpacity>
-                          ))}
-                        </View>
-                      </ScrollView>
-                    </View>
-                  </View>
 
-                  <Text style={voiceModal.previewMeta}>
-                    {Math.round(item.nutrition.kcal)} kcal · P:{Math.round(item.nutrition.protein)}g · C:{Math.round(item.nutrition.carbs)}g · G:{Math.round(item.nutrition.fat)}g
-                  </Text>
-                  {item.sourceNote ? (
-                    <Text style={voiceModal.spokenText}>{item.sourceNote}</Text>
-                  ) : null}
+                    <Text style={voiceModal.previewMeta}>{formatNutritionDetails(item.nutrition, { includeKcal: true })}</Text>
+                    {item.sourceNote ? (
+                      <Text style={voiceModal.spokenText}>{item.sourceNote}</Text>
+                    ) : null}
                   </View>
-              ))
-            )}
-          </View>
+                ))
+              )}
+            </View>
 
-          <Text style={voiceModal.exTitle}>Dicas rápidas</Text>
-          <Text style={voiceModal.example}>Use frases como "2 ovos", "100 gramas de frango", "1 xícara de leite".</Text>
-          <Text style={voiceModal.example}>Se não falar quantidade, o app usa a porção padrão daquele alimento.</Text>
+            <Text style={voiceModal.exTitle}>Dicas rápidas</Text>
+            <Text style={voiceModal.example}>Use frases como "2 ovos", "100 gramas de frango", "1 xícara de leite".</Text>
+            <Text style={voiceModal.example}>Se não falar quantidade, o app usa a porção padrão daquele alimento.</Text>
+          </ScrollView>
 
           <View style={modal.actions}>
             <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
@@ -881,27 +996,32 @@ function VoiceModal({
 
 // ─── Photo Modal ──────────────────────────────────────────────────────────────
 
-function PhotoModal({
-  visible, onClose, onConfirm, customFoods,
+export function PhotoModal({
+  visible, onClose, onConfirm, customFoods, allowPhotoOnlyPost = false,
 }: {
   visible: boolean;
   onClose: () => void;
-  onConfirm: (items: MealDraft[], mealPeriod: MealPeriod) => Promise<void> | void;
+  onConfirm: (items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; summary: string; caption: string }) => Promise<void> | void;
   customFoods: FoodItem[];
+  allowPhotoOnlyPost?: boolean;
 }) {
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [summary, setSummary] = useState('');
+  const [postCaption, setPostCaption] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [editableDrafts, setEditableDrafts] = useState<MealDraft[]>([]);
   const [addedCount, setAddedCount] = useState(0);
   const [confirming, setConfirming] = useState(false);
   const [mealPeriod, setMealPeriod] = useState<MealPeriod>(getDefaultMealPeriod());
   const hasInvalidDraft = editableDrafts.some((item) => !item.foodFound);
+  const canConfirmPhotoOnly = allowPhotoOnlyPost && Boolean(imageUri) && postCaption.trim().length > 0;
+  const canConfirm = !analyzing && !confirming && !hasInvalidDraft && (editableDrafts.length > 0 || canConfirmPhotoOnly);
 
   React.useEffect(() => {
     if (!visible) return;
     setImageUri(null);
     setSummary('');
+    setPostCaption('');
     setAnalyzing(false);
     setEditableDrafts([]);
     setAddedCount(0);
@@ -947,6 +1067,7 @@ function PhotoModal({
   async function analyzePhoto(base64: string, mimeType: string) {
     setAnalyzing(true);
     setSummary('');
+    setPostCaption('');
     setEditableDrafts([]);
     try {
       const result = await analyzeMealPhoto(base64, mimeType);
@@ -978,6 +1099,10 @@ function PhotoModal({
       }
     } catch (e) {
       console.warn('Photo meal analysis failed', e);
+      if (isAiLimitError(e)) {
+        Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
+        return;
+      }
       Alert.alert('Erro ao analisar foto', 'Não consegui identificar o prato agora. Tente novamente ou use a entrada manual.');
     } finally {
       setAnalyzing(false);
@@ -986,12 +1111,15 @@ function PhotoModal({
 
   async function confirm() {
     const itemsToSave = editableDrafts;
+    const caption = postCaption.trim() || summary;
+    const photo = imageUri ? { imageUri, summary, caption } : undefined;
     setConfirming(true);
     try {
-      await onConfirm(itemsToSave, mealPeriod);
+      await onConfirm(itemsToSave, mealPeriod, photo);
       setAddedCount((count) => count + itemsToSave.length);
       setImageUri(null);
       setSummary('');
+      setPostCaption('');
       setEditableDrafts([]);
     } finally {
       setConfirming(false);
@@ -1048,43 +1176,63 @@ function PhotoModal({
             </TouchableOpacity>
           </View>
 
-          <View style={photoModal.photoActions}>
-            <TouchableOpacity style={photoModal.photoButton} onPress={() => pickImage('camera')} disabled={analyzing}>
-              <MaterialIcons name="photo-camera" size={22} color={Colors.green600} />
-              <Text style={photoModal.photoButtonText}>Tirar foto</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={photoModal.photoButton} onPress={() => pickImage('library')} disabled={analyzing}>
-              <MaterialIcons name="photo-library" size={22} color={Colors.green600} />
-              <Text style={photoModal.photoButtonText}>Galeria</Text>
-            </TouchableOpacity>
-          </View>
-
-          {imageUri ? (
-            <Image source={{ uri: imageUri }} style={photoModal.previewImage} resizeMode="cover" />
-          ) : (
-            <View style={photoModal.emptyImage}>
-              <MaterialIcons name="restaurant" size={34} color={Colors.gray400} />
-              <Text style={photoModal.emptyImageText}>Escolha uma foto clara do prato para começar.</Text>
+          <ScrollView
+            style={modal.body}
+            contentContainerStyle={modal.bodyContent}
+            showsVerticalScrollIndicator
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={photoModal.photoActions}>
+              <TouchableOpacity style={photoModal.photoButton} onPress={() => pickImage('camera')} disabled={analyzing}>
+                <MaterialIcons name="photo-camera" size={22} color={Colors.green600} />
+                <Text style={photoModal.photoButtonText}>Tirar foto</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={photoModal.photoButton} onPress={() => pickImage('library')} disabled={analyzing}>
+                <MaterialIcons name="photo-library" size={22} color={Colors.green600} />
+                <Text style={photoModal.photoButtonText}>Galeria</Text>
+              </TouchableOpacity>
             </View>
-          )}
 
-          {analyzing && (
-            <View style={photoModal.loadingBox}>
-              <ActivityIndicator color={Colors.green400} />
-              <Text style={photoModal.loadingText}>Analisando alimentos e porções...</Text>
-            </View>
-          )}
-
-          {summary ? <Text style={photoModal.summary}>{summary}</Text> : null}
-
-          <View style={voiceModal.previewBox}>
-            <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
-            <Text style={voiceModal.exTitle}>Itens detectados</Text>
-            {editableDrafts.length === 0 ? (
-              <Text style={voiceModal.previewEmpty}>Depois da análise, confira os alimentos aqui e ajuste o que precisar.</Text>
+            {imageUri ? (
+              <Image source={{ uri: imageUri }} style={photoModal.previewImage} resizeMode="cover" />
             ) : (
-              <ScrollView showsVerticalScrollIndicator>
-                {editableDrafts.map((item) => (
+              <View style={photoModal.emptyImage}>
+                <MaterialIcons name="restaurant" size={34} color={Colors.gray400} />
+                <Text style={photoModal.emptyImageText}>Escolha uma foto clara do prato para começar.</Text>
+              </View>
+            )}
+
+            {analyzing && (
+              <View style={photoModal.loadingBox}>
+                <ActivityIndicator color={Colors.green400} />
+                <Text style={photoModal.loadingText}>Analisando alimentos e porções...</Text>
+              </View>
+            )}
+
+            {summary ? <Text style={photoModal.summary}>{summary}</Text> : null}
+
+            {imageUri ? (
+              <View style={photoModal.captionBox}>
+                <Text style={photoModal.captionLabel}>Título ou descrição do post</Text>
+                <TextInput
+                  style={photoModal.captionInput}
+                  value={postCaption}
+                  onChangeText={setPostCaption}
+                  placeholder="Ex: Almoço de hoje com arroz, feijão e frango"
+                  placeholderTextColor={Colors.gray400}
+                  multiline
+                  maxLength={180}
+                />
+              </View>
+            ) : null}
+
+            <View style={voiceModal.previewBox}>
+              <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
+              <Text style={voiceModal.exTitle}>Itens detectados</Text>
+              {editableDrafts.length === 0 ? (
+                <Text style={voiceModal.previewEmpty}>Depois da análise, confira os alimentos aqui e ajuste o que precisar.</Text>
+              ) : (
+                editableDrafts.map((item) => (
                   <View key={item.key} style={voiceModal.editCard}>
                     <View style={voiceModal.editHeader}>
                       <Text style={voiceModal.previewEmoji}>{item.food?.emoji ?? '?'}</Text>
@@ -1135,26 +1283,28 @@ function PhotoModal({
                       </View>
                     </View>
 
-                    <Text style={voiceModal.previewMeta}>
-                      {Math.round(item.nutrition.kcal)} kcal · P:{Math.round(item.nutrition.protein)}g · C:{Math.round(item.nutrition.carbs)}g · G:{Math.round(item.nutrition.fat)}g
-                    </Text>
+                    <Text style={voiceModal.previewMeta}>{formatNutritionDetails(item.nutrition, { includeKcal: true })}</Text>
                     {item.sourceNote ? <Text style={voiceModal.spokenText}>{item.sourceNote}</Text> : null}
                   </View>
-                ))}
-              </ScrollView>
-            )}
-          </View>
+                ))
+              )}
+            </View>
+          </ScrollView>
 
           <View style={modal.actions}>
             <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
               <Text style={modal.btnCancelText}>Fechar</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[modal.btnAdd, (editableDrafts.length === 0 || hasInvalidDraft || analyzing || confirming) && modal.btnDisabled]}
+              style={[modal.btnAdd, !canConfirm && modal.btnDisabled]}
               onPress={confirm}
-              disabled={editableDrafts.length === 0 || hasInvalidDraft || analyzing || confirming}
+              disabled={!canConfirm}
             >
-              {confirming ? <ActivityIndicator color={Colors.white} /> : <Text style={modal.btnAddText}>Adicionar e continuar</Text>}
+              {confirming ? (
+                <ActivityIndicator color={Colors.white} />
+              ) : (
+                <Text style={modal.btnAddText}>{editableDrafts.length === 0 && canConfirmPhotoOnly ? 'Publicar foto' : 'Adicionar e continuar'}</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -1168,6 +1318,8 @@ function PhotoModal({
 function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete: () => void }) {
   const time = new Date(entry.addedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   const mealPeriod = getEntryMealPeriod(entry);
+  const nutritionDetails = formatNutritionDetails(entry.nutrition);
+
   return (
     <View style={logStyle.row}>
       <Text style={logStyle.emoji}>{entry.emoji}</Text>
@@ -1177,9 +1329,7 @@ function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete: () => voi
           <View style={logStyle.timeBadge}><Text style={logStyle.timeTxt}>{time}</Text></View>
         </View>
         <Text style={logStyle.name}>{entry.foodName}</Text>
-        <Text style={logStyle.macros}>
-          P:{Math.round(entry.nutrition.protein)}g · C:{Math.round(entry.nutrition.carbs)}g · G:{Math.round(entry.nutrition.fat)}g
-        </Text>
+        {nutritionDetails ? <Text style={logStyle.macros}>{nutritionDetails}</Text> : null}
       </View>
       <View style={logStyle.right}>
         <Text style={logStyle.kcal}>{Math.round(entry.nutrition.kcal)}</Text>
@@ -1194,18 +1344,29 @@ function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete: () => voi
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
-export function AddMealScreen() {
+export function AddMealScreen({
+  onMealAdded,
+  fabBottomOffset = Spacing.base,
+}: {
+  onMealAdded?: () => void;
+  fabBottomOffset?: number;
+}) {
   const todayLog   = useStore((s) => s.todayLog);
   const savedMeals = useStore(selectSavedMeals);
   const removeEntry = useStore((s) => s.removeEntry);
   const goals       = useStore(selectGoals);
   const user        = useStore((s) => s.user);
+  const profile     = useStore((s) => s.profile);
   const addEntryFn  = useStore((s) => s.addEntry);
 
   const [addModal,   setAddModal]   = useState(false);
   const [voiceModal, setVoiceModal] = useState(false);
   const [photoModal, setPhotoModal] = useState(false);
   const [customFoods, setCustomFoods] = useState<FoodItem[]>([]);
+
+  function handleMealAdded() {
+    setTimeout(() => onMealAdded?.(), 0);
+  }
 
   React.useEffect(() => {
     let active = true;
@@ -1216,7 +1377,34 @@ export function AddMealScreen() {
 
     getCustomFoods(user.id)
       .then((foods) => {
-        if (active) setCustomFoods(foods);
+        if (!active) return;
+        setCustomFoods(foods);
+
+        if (!isFirebaseConfigured || user.id === 'dev_user' || foodEnrichmentPaused) return;
+        const foodsToEnrich = foods
+          .filter((food) => !hasExpandedNutrition(food) && !enrichedFoodIdsThisSession.has(food.id))
+          .slice(0, ENRICH_FOODS_PER_LOAD);
+
+        if (foodsToEnrich.length === 0) return;
+
+        (async () => {
+          for (const food of foodsToEnrich) {
+            enrichedFoodIdsThisSession.add(food.id);
+            try {
+              const generated = await generateFoodNutrition(food.name, food.defaultUnit);
+              const enriched = mergeExpandedFoodNutrition(food, generated);
+              const nextFoods = await saveCustomFood(user.id, enriched);
+              if (active) setCustomFoods(nextFoods);
+            } catch (error) {
+              if (isAiLimitError(error)) {
+                foodEnrichmentPaused = true;
+                console.warn('Enriquecimento nutricional pausado: limite diário da IA atingido.');
+                break;
+              }
+              console.warn('Failed to enrich food nutrition', food.name, error);
+            }
+          }
+        })();
       })
       .catch((error) => {
         console.warn('Failed to load custom foods', error);
@@ -1238,7 +1426,12 @@ export function AddMealScreen() {
     return food;
   }, [customFoods, user]);
 
-  async function saveDraftItems(items: MealDraft[], source: 'voice' | 'photo', mealPeriod: MealPeriod) {
+  async function saveDraftItems(
+    items: MealDraft[],
+    source: 'voice' | 'photo',
+    mealPeriod: MealPeriod,
+    options: { navigateAfter?: boolean } = {}
+  ) {
     if (!user || !goals) {
       Alert.alert('Perfil não carregado', 'Aguarde o app carregar seus dados e tente novamente.');
       throw new Error('Missing user or goals');
@@ -1259,7 +1452,8 @@ export function AddMealScreen() {
         quantity:  item.quantity,
         unit:      item.unit,
         nutrition: item.nutrition,
-        mealPeriod,
+        waterMl:   getWaterMl(item.food, item.quantity, item.unit),
+        mealPeriod: getWaterMl(item.food, item.quantity, item.unit) ? 'hydration' : mealPeriod,
         source,
       } satisfies MealEntryPayload;
       let entry: MealEntry;
@@ -1295,6 +1489,8 @@ export function AddMealScreen() {
         'Não consegui sincronizar alguns itens com o Firebase agora, mas registrei no dia atual.'
       );
     }
+
+    if (options.navigateAfter !== false) handleMealAdded();
   }
 
   async function handleVoiceConfirm(items: MealDraft[], mealPeriod: MealPeriod) {
@@ -1305,8 +1501,48 @@ export function AddMealScreen() {
     await saveDraftItems(items, 'voice', mealPeriod);
   }
 
-  async function handlePhotoConfirm(items: MealDraft[], mealPeriod: MealPeriod) {
-    await saveDraftItems(items, 'photo', mealPeriod);
+  async function publishPhotoPost(items: MealDraft[], mealPeriod: MealPeriod, photo: { imageUri: string; summary: string; caption: string }) {
+    if (!user) return;
+    const validItems = items.filter((item) => item.food);
+    const nutrition = sumNutrition(validItems.map((item) => ({ nutrition: item.nutrition })));
+    const foodNames = validItems.map((item) => item.food?.name ?? item.foodText).filter(Boolean);
+    const authorName = profile?.name ?? user.name ?? 'Usuário';
+
+    if (!isFirebaseConfigured || user.id === 'dev_user') {
+      Alert.alert('Modo local', 'A publicação social precisa do Firebase ativo para salvar a foto no feed.');
+      return;
+    }
+
+    try {
+      await addCommunityPost({
+        authorId: user.id,
+        authorName,
+        imageUri: photo.imageUri,
+        caption: photo.caption,
+        nutrition,
+        foodNames,
+        mealPeriod,
+      });
+      Alert.alert('Publicado', 'Sua foto foi publicada na comunidade.');
+    } catch (error) {
+      console.warn('Failed to publish community post', error);
+      Alert.alert('Não foi possível publicar', 'A refeição foi salva, mas a foto não entrou no feed agora.');
+    }
+  }
+
+  async function handlePhotoConfirm(items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; summary: string; caption: string }) {
+    await saveDraftItems(items, 'photo', mealPeriod, { navigateAfter: false });
+    if (photo) {
+      Alert.alert('Publicar na comunidade?', 'Compartilhar a foto do prato com as informações nutricionais?', [
+        { text: 'Agora não', style: 'cancel', onPress: handleMealAdded },
+        { text: 'Publicar', onPress: async () => {
+          await publishPhotoPost(items, mealPeriod, photo);
+          handleMealAdded();
+        } },
+      ]);
+      return;
+    }
+    handleMealAdded();
   }
 
   async function quickAdd(mealId: string) {
@@ -1328,6 +1564,7 @@ export function AddMealScreen() {
           };
       addEntryFn(entry);
     }
+    handleMealAdded();
   }
 
   async function handleDeleteEntry(entry: MealEntry) {
@@ -1365,20 +1602,6 @@ export function AddMealScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>
-        {/* Buttons */}
-        <TouchableOpacity style={styles.btnManual} onPress={() => setAddModal(true)}>
-          <MaterialIcons name="edit-note" size={24} color={Colors.white} />
-          <Text style={styles.btnManualText}>Digitar o que comi</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.btnVoice} onPress={() => setVoiceModal(true)}>
-          <MaterialIcons name="mic" size={22} color={Colors.purpleD} />
-          <Text style={styles.btnVoiceText}>Falar o que comi</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.btnPhoto} onPress={() => setPhotoModal(true)}>
-          <MaterialIcons name="photo-camera" size={22} color={Colors.green600} />
-          <Text style={styles.btnPhotoText}>Fotografar prato</Text>
-        </TouchableOpacity>
-
         {/* Saved meals */}
         {savedMeals.length > 0 && (
           <>
@@ -1389,9 +1612,7 @@ export function AddMealScreen() {
                   <Text style={styles.savedEmoji}>{m.emoji}</Text>
                   <View>
                     <Text style={styles.savedName}>{m.name}</Text>
-                    <Text style={styles.savedInfo}>
-                      {Math.round(m.totalNutrition.kcal)} kcal · P:{Math.round(m.totalNutrition.protein)}g
-                    </Text>
+                    <Text style={styles.savedInfo}>{formatNutritionDetails(m.totalNutrition, { includeKcal: true })}</Text>
                   </View>
                 </View>
                 <TouchableOpacity style={styles.quickAddBtn} onPress={() => quickAdd(m.id)}>
@@ -1426,7 +1647,19 @@ export function AddMealScreen() {
         )}
       </ScrollView>
 
-      <AddMealModal visible={addModal} onClose={() => setAddModal(false)} onAdded={() => {}} customFoods={customFoods} onCreateFood={handleCreateFood} />
+      <View style={[styles.fabDock, Platform.OS === 'web' && styles.fabDockFixed, { bottom: fabBottomOffset }]}>
+        <TouchableOpacity style={[styles.mealFab, styles.manualFab]} onPress={() => setAddModal(true)}>
+          <MaterialIcons name="edit-note" size={24} color={Colors.white} />
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.mealFab, styles.voiceFab]} onPress={() => setVoiceModal(true)}>
+          <MaterialIcons name="mic" size={23} color={Colors.purpleD} />
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.mealFab, styles.photoFab]} onPress={() => setPhotoModal(true)}>
+          <MaterialIcons name="photo-camera" size={23} color={Colors.green600} />
+        </TouchableOpacity>
+      </View>
+
+      <AddMealModal visible={addModal} onClose={() => setAddModal(false)} onAdded={handleMealAdded} customFoods={customFoods} onCreateFood={handleCreateFood} />
       <VoiceModal   visible={voiceModal} onClose={() => setVoiceModal(false)} onConfirm={handleVoiceConfirm} customFoods={customFoods} onCreateFood={handleCreateFood} />
       <PhotoModal   visible={photoModal} onClose={() => setPhotoModal(false)} onConfirm={handlePhotoConfirm} customFoods={customFoods} />
     </SafeAreaView>
@@ -1439,28 +1672,29 @@ const styles = StyleSheet.create({
   safe:        { flex: 1, backgroundColor: Colors.bg },
   headerBar:   { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', backgroundColor: Colors.white, padding: Spacing.base, borderBottomWidth: 1, borderBottomColor: Colors.border },
   headerTitle: { fontSize: Typography.lg, fontWeight: Typography.bold },
-  scroll:      { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', padding: Spacing.base, paddingBottom: 100 },
+  scroll:      { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', padding: Spacing.base, paddingBottom: 150 },
 
-  btnManual: {
-    backgroundColor: Colors.green400, borderRadius: Radius.md,
-    paddingVertical: 16, alignItems: 'center', marginBottom: Spacing.sm,
-    flexDirection: 'row', justifyContent: 'center', gap: Spacing.sm,
+  fabDock: {
+    position: 'absolute',
+    right: Spacing.base,
+    alignItems: 'flex-end',
+    gap: Spacing.sm,
   },
-  btnManualText: { color: Colors.white, fontSize: Typography.base, fontWeight: Typography.bold },
-  btnVoice: {
-    backgroundColor: Colors.purpleL, borderRadius: Radius.md,
-    paddingVertical: 14, alignItems: 'center', marginBottom: Spacing.sm,
-    borderWidth: 1.5, borderColor: Colors.purple,
-    flexDirection: 'row', justifyContent: 'center', gap: Spacing.sm,
+  fabDockFixed: {
+    position: 'fixed' as any,
   },
-  btnVoiceText: { color: Colors.purpleD, fontSize: Typography.base, fontWeight: Typography.semibold },
-  btnPhoto: {
-    backgroundColor: Colors.green50, borderRadius: Radius.md,
-    paddingVertical: 14, alignItems: 'center', marginBottom: Spacing.lg,
-    borderWidth: 1.5, borderColor: Colors.green400,
-    flexDirection: 'row', justifyContent: 'center', gap: Spacing.sm,
+  mealFab: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    ...Shadows.md,
   },
-  btnPhotoText: { color: Colors.green600, fontSize: Typography.base, fontWeight: Typography.semibold },
+  manualFab: { backgroundColor: Colors.green400, borderColor: Colors.green400 },
+  voiceFab: { backgroundColor: Colors.purpleL, borderColor: Colors.purple },
+  photoFab: { backgroundColor: Colors.green50, borderColor: Colors.green400 },
 
   sectionLabel: { fontSize: Typography.xs, fontWeight: Typography.bold, color: Colors.gray400, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: Spacing.sm },
 
@@ -1508,8 +1742,10 @@ const modal = StyleSheet.create({
   bg:       { flex: 1, justifyContent: 'flex-end' },
   backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.4)' },
   sheet:    { height: '92%', width: '100%', maxWidth: Platform.OS === 'web' ? 720 : undefined, alignSelf: 'center', backgroundColor: Colors.white, borderTopLeftRadius: Radius.xxl, borderTopRightRadius: Radius.xxl, padding: Spacing.base, paddingBottom: Spacing.lg },
-  handle:   { width: 40, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.base },
-  modalHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: Spacing.sm, marginBottom: Spacing.base },
+  handle:   { width: 40, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.base, flexShrink: 0 },
+  modalHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: Spacing.sm, marginBottom: Spacing.base, flexShrink: 0 },
+  body: { flex: 1, minHeight: 0 },
+  bodyContent: { paddingBottom: Spacing.sm },
   title:    { fontSize: Typography.lg, fontWeight: Typography.bold },
   subtitle: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 3 },
   closePill: { backgroundColor: Colors.gray50, borderRadius: Radius.full, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderWidth: 1, borderColor: Colors.border },
@@ -1557,7 +1793,7 @@ const modal = StyleSheet.create({
   estVal:       { fontSize: Typography.base, fontWeight: Typography.bold },
   estLabel:     { fontSize: Typography.xs, color: Colors.gray400 },
 
-  actions:     { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.xs },
+  actions:     { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.white, flexShrink: 0 },
   btnCancel:   { flex: 1, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingVertical: 13, alignItems: 'center' },
   btnCancelText: { fontSize: Typography.base, color: Colors.gray600 },
   btnAdd:      { flex: 2, backgroundColor: Colors.green400, borderRadius: Radius.md, paddingVertical: 13, alignItems: 'center' },
@@ -1651,5 +1887,27 @@ const photoModal = StyleSheet.create({
     borderRadius: Radius.sm,
     padding: Spacing.sm,
     marginBottom: Spacing.sm,
+  },
+  captionBox: {
+    backgroundColor: Colors.white,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  captionLabel: {
+    fontSize: Typography.xs,
+    color: Colors.gray400,
+    fontWeight: Typography.bold,
+    textTransform: 'uppercase',
+    marginBottom: Spacing.xs,
+  },
+  captionInput: {
+    minHeight: 58,
+    fontSize: Typography.sm,
+    color: Colors.gray800,
+    lineHeight: 19,
+    textAlignVertical: 'top',
   },
 });

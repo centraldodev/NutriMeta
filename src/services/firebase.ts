@@ -72,6 +72,8 @@ export const COLLECTIONS = {
   groups:     'groups',
   groupStats: 'groupStats',
   communityComments: 'communityComments',
+  communityPosts: 'communityPosts',
+  communityFollows: 'communityFollows',
   notifications: 'notifications',
 } as const;
 
@@ -83,12 +85,20 @@ service cloud.firestore {
 
     // Users can only read/write their own profile
     match /profiles/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'nutritionist'
+      );
+      allow write: if request.auth != null && request.auth.uid == userId;
     }
 
     // Daily logs: only owner
     match /dailyLogs/{logId} {
-      allow read, write: if request.auth != null
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'nutritionist'
+      );
+      allow write: if request.auth != null
         && resource.data.userId == request.auth.uid;
       allow create: if request.auth != null
         && request.resource.data.userId == request.auth.uid;
@@ -122,6 +132,18 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow write: if request.auth != null
         && resource.data.userId == request.auth.uid;
+    }
+
+    // Community posts: members/authenticated users can share meal photos
+    match /communityPosts/{postId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.authorId == request.auth.uid;
+    }
+
+    match /communityFollows/{followId} {
+      allow read: if request.auth != null;
+      allow create, delete: if request.auth != null;
     }
 
     // Notifications: members can read; system/cloud functions write

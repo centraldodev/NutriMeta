@@ -29,7 +29,8 @@ export function onAuthChange(callback: (user: FirebaseUser | null) => void) {
 export async function registerWithEmail(
   email: string,
   password: string,
-  displayName: string
+  displayName: string,
+  role: User['role'] = 'user'
 ): Promise<User> {
   const credential = await createUserWithEmailAndPassword(auth, email, password);
   await updateProfile(credential.user, { displayName });
@@ -38,6 +39,7 @@ export async function registerWithEmail(
     id:        credential.user.uid,
     name:      displayName,
     email:     credential.user.email!,
+    role,
     createdAt: new Date(),
   };
 
@@ -55,7 +57,7 @@ export async function loginWithEmail(
   password: string
 ): Promise<User> {
   const credential = await signInWithEmailAndPassword(auth, email, password);
-  return mapFirebaseUser(credential.user);
+  return getUserAccount(credential.user);
 }
 
 export async function resetPassword(email: string): Promise<void> {
@@ -78,6 +80,9 @@ export async function loginWithGoogleToken(idToken: string): Promise<User> {
       ...user,
       createdAt: serverTimestamp(),
     });
+  } else {
+    const data = existing.data();
+    user.role = data.role ?? 'user';
   }
 
   return user;
@@ -115,11 +120,25 @@ export async function getUserProfile(userId: string): Promise<UserProfile | null
 
 // ─── Utils ───────────────────────────────────────────────────────────────────
 
+export async function getUserAccount(fbUser: FirebaseUser): Promise<User> {
+  const mapped = mapFirebaseUser(fbUser);
+  const snap = await getDoc(doc(db, COLLECTIONS.users, mapped.id));
+  if (!snap.exists()) return mapped;
+  const data = snap.data();
+  return {
+    ...mapped,
+    name: data.name ?? mapped.name,
+    role: data.role ?? 'user',
+    createdAt: data.createdAt?.toDate?.() ?? mapped.createdAt,
+  };
+}
+
 export function mapFirebaseUser(fbUser: FirebaseUser): User {
   return {
     id:         fbUser.uid,
     name:       fbUser.displayName ?? 'Usuário',
     email:      fbUser.email!,
+    role:       'user',
     avatarUrl:  fbUser.photoURL ?? undefined,
     createdAt:  new Date(),
   };

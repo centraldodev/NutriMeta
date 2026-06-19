@@ -4,6 +4,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  role?: 'user' | 'nutritionist';
   avatarUrl?: string;
   createdAt: Date;
 }
@@ -111,13 +112,14 @@ export interface MealEntry {
   quantity: number;
   unit: QuantityUnit;
   nutrition: FoodNutrition;                      // calculated total
+  waterMl?: number;
   addedAt: Date;
   mealPeriod: MealPeriod;
   source: 'manual' | 'voice' | 'photo' | 'saved';
   savedMealId?: string;
 }
 
-export type MealPeriod = 'breakfast' | 'lunch' | 'dinner' | 'snack';
+export type MealPeriod = 'breakfast' | 'lunch' | 'dinner' | 'snack' | 'hydration';
 
 export interface SavedMeal {
   id: string;
@@ -191,6 +193,20 @@ export interface CommunityComment {
   authorId: string;
   authorName: string;
   message: string;
+  createdAt: Date;
+}
+
+export interface CommunityPost {
+  id: string;
+  groupId: string;
+  authorId: string;
+  authorName: string;
+  authorInitials: string;
+  imageUrl: string;
+  caption?: string;
+  nutrition: FoodNutrition;
+  foodNames: string[];
+  mealPeriod: MealPeriod;
   createdAt: Date;
 }
 
