@@ -10,12 +10,12 @@ import { HomeScreen } from './src/screens/HomeScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { OnboardingScreen } from './src/screens/OnboardingScreen';
 import { RankingScreen } from './src/screens/RankingScreen';
-import { Colors, Radius, Spacing, Typography } from './src/constants/theme';
+import { Colors, Radius, Spacing, Typography, Shadows } from './src/constants/theme';
 import { isFirebaseConfigured } from './src/config';
 import { useStore } from './src/store';
 import { getUserProfile, mapFirebaseUser, onAuthChange } from './src/services/authService';
 import { subscribeDailyLog } from './src/services/nutritionService';
-import { clearSession, loadSession, saveSession } from './src/services/sessionStorage';
+import { subscribeGroupNotifications } from './src/services/groupService';
 import { calcMacroGoals, formatDate } from './src/utils/nutrition';
 
 type MainTab = 'home' | 'addMeal' | 'analysis' | 'ranking';
@@ -26,6 +26,7 @@ const WEB_FIXED_TAB_BAR_STYLE = Platform.OS === 'web'
 
 function MainTabs() {
   const [tab, setTab] = useState<MainTab>('home');
+  const [waterOpen, setWaterOpen] = useState(false);
   const insets = useSafeAreaInsets();
   const tabBarBottom = Platform.OS === 'web' ? Spacing.base : insets.bottom + Spacing.sm;
 
@@ -34,19 +35,43 @@ function MainTabs() {
       { key: 'home' as const, label: 'Hoje', icon: 'today' as const },
       { key: 'addMeal' as const, label: 'Refeições', icon: 'add-circle-outline' as const },
       { key: 'analysis' as const, label: 'Análise', icon: 'insights' as const },
-      { key: 'ranking' as const, label: 'Ranking', icon: 'leaderboard' as const },
+      { key: 'ranking' as const, label: 'Comunidade', icon: 'groups' as const },
     ],
     []
   );
 
+  const user = useStore((state) => state.user);
+  const goals = useStore((state) => state.goals);
+  const addWater = useStore((state) => state.addWater);
+
+  async function handleAddWater(amountMl: number) {
+    if (!user || !goals) return;
+    addWater(amountMl);
+    if (isFirebaseConfigured && user.id !== 'dev_user') {
+      try {
+        const { addWaterIntake } = await import('./src/services/nutritionService');
+        await addWaterIntake(user.id, goals, amountMl);
+      } catch (error) {
+        console.warn('Failed to save water to Firebase', error);
+      }
+    }
+  }
+
   return (
     <View style={styles.appShell}>
       <View style={[styles.content, { paddingBottom: tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm }]}>
-        {tab === 'home' && <HomeScreen />}
+        {tab === 'home' && <HomeScreen waterOpen={waterOpen} onWaterClose={() => setWaterOpen(false)} onAddWater={handleAddWater} />}
         {tab === 'addMeal' && <AddMealScreen />}
         {tab === 'analysis' && <AnalysisScreen />}
         {tab === 'ranking' && <RankingScreen />}
       </View>
+
+      <TouchableOpacity 
+        style={[styles.waterFab, { bottom: MAIN_TAB_BAR_HEIGHT + Spacing.md }]} 
+        onPress={() => setWaterOpen(true)}
+      >
+        <MaterialIcons name="local-drink" size={28} color={Colors.white} />
+      </TouchableOpacity>
 
       <View style={[styles.tabBar, WEB_FIXED_TAB_BAR_STYLE, { bottom: tabBarBottom }]}>
         {tabs.map((item) => {
@@ -75,25 +100,16 @@ export default function App() {
   const user = useStore((state) => state.user);
   const profile = useStore((state) => state.profile);
   const goals = useStore((state) => state.goals);
+  const groups = useStore((state) => state.groups);
   const setUser = useStore((state) => state.setUser);
   const setProfile = useStore((state) => state.setProfile);
   const setGoals = useStore((state) => state.setGoals);
   const setTodayLog = useStore((state) => state.setTodayLog);
+  const setNotifications = useStore((state) => state.setNotifications);
   const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
     let mounted = true;
-
-    loadSession()
-      .then((session) => {
-        if (!mounted || !session?.user) return;
-        setUser(session.user);
-        if (session.profile) setProfile(session.profile);
-        if (session.goals) setGoals(session.goals);
-      })
-      .finally(() => {
-        if (mounted) setAuthReady(true);
-      });
 
     const unsubscribe = onAuthChange(async (firebaseUser) => {
       if (!mounted) return;
@@ -122,18 +138,15 @@ export default function App() {
   }, [setGoals, setProfile, setUser]);
 
   useEffect(() => {
-    if (!authReady) return;
-    if (!user) {
-      clearSession().catch(() => undefined);
-      return;
-    }
-    saveSession({ user, profile, goals }).catch(() => undefined);
-  }, [authReady, goals, profile, user]);
-
-  useEffect(() => {
     if (!user || user.id === 'dev_user' || !isFirebaseConfigured) return undefined;
     return subscribeDailyLog(user.id, formatDate(new Date()), setTodayLog);
   }, [setTodayLog, user]);
+
+  useEffect(() => {
+    const group = groups[0];
+    if (!user || !group || user.id === 'dev_user' || !isFirebaseConfigured) return undefined;
+    return subscribeGroupNotifications(group.id, setNotifications);
+  }, [groups, setNotifications, user]);
 
   if (!authReady) {
     return (
@@ -219,5 +232,19 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: Colors.green600,
+  },
+  waterFab: {
+    position: 'absolute',
+    right: Spacing.lg,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: Colors.info,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+    ...(Platform.OS === 'web'
+      ? { boxShadow: '0px 4px 8px rgba(0, 0, 0, 0.1)' }
+      : Shadows.md),
   },
 });

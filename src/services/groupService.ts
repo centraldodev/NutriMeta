@@ -1,6 +1,7 @@
 import {
   doc,
   getDoc,
+  addDoc,
   setDoc,
   updateDoc,
   arrayUnion,
@@ -13,8 +14,11 @@ import {
   Unsubscribe,
 } from 'firebase/firestore';
 import { db, COLLECTIONS } from './firebase';
+import { getRecentDailyLogs } from './nutritionService';
 import {
   Group,
+  CommunityComment,
+  CommunityPrivacy,
   GroupMemberStats,
   GroupNotification,
   MacroGoals,
@@ -95,17 +99,45 @@ export async function getUserGroups(userId: string): Promise<Group[]> {
 
 // ─── Group Stats (ranking) ────────────────────────────────────────────────────
 
+function isConsistentDay(totalNutrition: FoodNutrition, goals: MacroGoals): boolean {
+  const completed = getCompletedGoals(totalNutrition, goals);
+  const kcalRatio = goals.kcal > 0 ? totalNutrition.kcal / goals.kcal : 0;
+  return kcalRatio >= 0.85 && kcalRatio <= 1.1 && completed.length >= 3;
+}
+
+async function getCurrentStreakDays(userId: string, fallbackGoals: MacroGoals): Promise<number> {
+  try {
+    const logs = await getRecentDailyLogs(userId, 14);
+    let streak = 0;
+    const byDate = new Map(logs.map((log) => [log.date, log]));
+
+    for (let offset = 0; offset < 14; offset += 1) {
+      const date = new Date();
+      date.setDate(date.getDate() - offset);
+      const log = byDate.get(formatDate(date));
+      if (!log) break;
+      if (!isConsistentDay(log.totalNutrition, log.goals ?? fallbackGoals)) break;
+      streak += 1;
+    }
+    return streak;
+  } catch {
+    return 0;
+  }
+}
+
 export async function upsertMemberStats(
   userId: string,
   userName: string,
   groupId: string,
   totalNutrition: FoodNutrition,
-  goals: MacroGoals
+  goals: MacroGoals,
+  privacy?: CommunityPrivacy
 ): Promise<void> {
   const date    = formatDate(new Date());
   const statId  = `${groupId}_${userId}_${date}`;
   const completed = getCompletedGoals(totalNutrition, goals);
   const points    = calcRankingPoints(totalNutrition, goals, completed);
+  const streakDays = await getCurrentStreakDays(userId, goals);
   const colorIdx  = Math.abs(userId.split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % AvatarColors.length;
 
   await setDoc(
@@ -119,6 +151,8 @@ export async function upsertMemberStats(
       totalNutrition,
       goals,
       completedGoals: completed,
+      streakDays,
+      privacy,
       points,
       date,
       updatedAt:      serverTimestamp(),
@@ -128,6 +162,43 @@ export async function upsertMemberStats(
 
   // Fire notifications for newly completed goals
   await checkAndFireNotifications(userId, userName, groupId, completed, date);
+}
+
+export async function addCommunityComment(
+  groupId: string,
+  targetUserId: string,
+  authorId: string,
+  authorName: string,
+  message: string
+): Promise<void> {
+  await addDoc(collection(db, COLLECTIONS.communityComments), {
+    groupId,
+    targetUserId,
+    authorId,
+    authorName,
+    message: message.trim().slice(0, 240),
+    createdAt: serverTimestamp(),
+  });
+}
+
+export function subscribeCommunityComments(
+  groupId: string,
+  onUpdate: (comments: CommunityComment[]) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, COLLECTIONS.communityComments),
+    where('groupId', '==', groupId)
+  );
+  return onSnapshot(q, (snap) => {
+    onUpdate(snap.docs.map((docSnap) => {
+      const data = docSnap.data();
+      return {
+        id: docSnap.id,
+        ...data,
+        createdAt: data.createdAt?.toDate() ?? new Date(),
+      } as CommunityComment;
+    }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 80));
+  });
 }
 
 export function subscribeGroupRanking(

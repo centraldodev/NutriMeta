@@ -165,6 +165,42 @@ export async function removeMealEntry(
   });
 }
 
+export async function addWaterIntake(
+  userId: string,
+  goals: MacroGoals,
+  amountMl: number
+): Promise<number> {
+  const date = formatDate(new Date());
+  const logId = dailyLogId(userId, date);
+  const ref = doc(db, COLLECTIONS.dailyLogs, logId);
+  const snap = await getDoc(ref);
+
+  if (!snap.exists()) {
+    const waterMl = amountMl;
+    const log: DailyLog = {
+      id: logId,
+      userId,
+      date,
+      entries: [],
+      totalNutrition: { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
+      waterMl,
+      goals,
+      completedGoals: [],
+      updatedAt: new Date(),
+    };
+    await setDoc(ref, { ...log, updatedAt: serverTimestamp() });
+    return waterMl;
+  }
+
+  const current = (snap.data().waterMl ?? 0) as number;
+  const waterMl = current + amountMl;
+  await updateDoc(ref, {
+    waterMl,
+    updatedAt: serverTimestamp(),
+  });
+  return waterMl;
+}
+
 // ─── Saved Meals ─────────────────────────────────────────────────────────────
 
 export async function getSavedMeals(userId: string): Promise<SavedMeal[]> {

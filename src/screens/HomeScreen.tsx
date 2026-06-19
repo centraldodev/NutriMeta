@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  ActivityIndicator,
   Image,
   Linking,
   Modal,
@@ -20,8 +21,9 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, MacroColors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
 import { isFirebaseConfigured } from '../config';
 import { saveUserProfile, signOut } from '../services/authService';
-import { clearSession } from '../services/sessionStorage';
-import { useStore, selectGoals, selectTodayLog } from '../store';
+import { refineDietGoals } from '../services/goalAiService';
+import { addWaterIntake } from '../services/nutritionService';
+import { useStore, selectGoals, selectNotifications, selectTodayLog, selectUnreadCount } from '../store';
 import { calcMacroGoals, formatKcal, formatGrams, macroPercent } from '../utils/nutrition';
 import {
   buildValidatedProfileValues,
@@ -54,27 +56,27 @@ const DEFAULT_GOALS: MacroGoals = {
 
 function RingChart({ pct, color }: { pct: number; color: string }) {
   const dash = (pct / 100) * CIRCUMFERENCE;
+  const centerPoint = RING_SIZE / 2;
   return (
     <Svg width={RING_SIZE} height={RING_SIZE}>
       <Circle
-        cx={RING_SIZE / 2}
-        cy={RING_SIZE / 2}
+        cx={centerPoint}
+        cy={centerPoint}
         r={RING_R}
         stroke={Colors.gray50}
         strokeWidth={RING_STROKE}
         fill="none"
       />
       <Circle
-        cx={RING_SIZE / 2}
-        cy={RING_SIZE / 2}
+        cx={centerPoint}
+        cy={centerPoint}
         r={RING_R}
         stroke={color}
         strokeWidth={RING_STROKE}
         fill="none"
         strokeDasharray={`${dash} ${CIRCUMFERENCE}`}
         strokeLinecap="round"
-        rotation="-90"
-        origin={`${RING_SIZE / 2}, ${RING_SIZE / 2}`}
+        transform={`rotate(-90 ${centerPoint} ${centerPoint})`}
       />
     </Svg>
   );
@@ -174,6 +176,8 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
     sodium: '',
   });
   const [saving, setSaving] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiReason, setAiReason] = useState('');
 
   useEffect(() => {
     if (!visible) return;
@@ -196,6 +200,8 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
       sugar: String(activeGoals.sugar),
       sodium: String(activeGoals.sodium),
     });
+    setAiReason('');
+    setAiLoading(false);
   }, [visible, goals, profile, user]);
 
   function updateGoalInput(key: keyof MacroGoals, value: string) {
@@ -221,6 +227,13 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
       activityLevel: activity,
       onboardingComplete: true,
       groupIds: profile?.groupIds ?? [],
+      communityPrivacy: profile?.communityPrivacy ?? {
+        showProtein: true,
+        showFiber: true,
+        showCalories: true,
+        showStreak: true,
+        showLimits: true,
+      },
       createdAt: profile?.createdAt ?? new Date(),
       updatedAt: new Date(),
     };
@@ -241,6 +254,44 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
       sugar: String(calculated.sugar),
       sodium: String(calculated.sodium),
     });
+    setAiReason('');
+  }
+
+  async function handleRefineGoalsWithAi() {
+    const nextProfile = buildProfile();
+    if (!nextProfile) return;
+
+    const baseGoals: MacroGoals = {
+      kcal: Math.round(parseNumber(goalInputs.kcal, DEFAULT_GOALS.kcal)),
+      protein: Math.round(parseNumber(goalInputs.protein, DEFAULT_GOALS.protein)),
+      carbs: Math.round(parseNumber(goalInputs.carbs, DEFAULT_GOALS.carbs)),
+      fat: Math.round(parseNumber(goalInputs.fat, DEFAULT_GOALS.fat)),
+      fiber: Math.round(parseNumber(goalInputs.fiber, DEFAULT_GOALS.fiber)),
+      water: Math.round(parseNumber(goalInputs.water, DEFAULT_GOALS.water)),
+      sugar: Math.round(parseNumber(goalInputs.sugar, DEFAULT_GOALS.sugar)),
+      sodium: Math.round(parseNumber(goalInputs.sodium, DEFAULT_GOALS.sodium)),
+    };
+
+    setAiLoading(true);
+    try {
+      const recommendation = await refineDietGoals(nextProfile, baseGoals);
+      setGoalInputs({
+        kcal: String(recommendation.goals.kcal),
+        protein: String(recommendation.goals.protein),
+        carbs: String(recommendation.goals.carbs),
+        fat: String(recommendation.goals.fat),
+        fiber: String(recommendation.goals.fiber),
+        water: String(recommendation.goals.water),
+        sugar: String(recommendation.goals.sugar),
+        sodium: String(recommendation.goals.sodium),
+      });
+      setAiReason(recommendation.rationale);
+    } catch (e) {
+      console.warn('AI goal refinement failed', e);
+      Alert.alert('IA indisponível', 'Não consegui refinar suas metas agora. As metas calculadas continuam disponíveis.');
+    } finally {
+      setAiLoading(false);
+    }
   }
 
   async function handlePickPhoto() {
@@ -389,10 +440,22 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
                 <Text style={modalStyles.sectionTitle}>Metas nutricionais</Text>
                 <Text style={modalStyles.sectionHint}>Edite manualmente ou recalcule pelos dados acima.</Text>
               </View>
-              <TouchableOpacity style={modalStyles.recalcBtn} onPress={handleRecalculateGoals}>
-                <Text style={modalStyles.recalcText}>Recalcular</Text>
-              </TouchableOpacity>
+              <View style={modalStyles.goalActionRow}>
+                <TouchableOpacity style={modalStyles.recalcBtn} onPress={handleRecalculateGoals} disabled={aiLoading}>
+                  <Text style={modalStyles.recalcText}>Recalcular</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[modalStyles.aiBtn, aiLoading && modalStyles.btnDisabled]} onPress={handleRefineGoalsWithAi} disabled={aiLoading}>
+                  {aiLoading ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={modalStyles.aiText}>Refinar com IA</Text>}
+                </TouchableOpacity>
+              </View>
             </View>
+
+            {aiReason ? (
+              <View style={modalStyles.aiReasonBox}>
+                <Text style={modalStyles.aiReasonTitle}>Sugestão da IA</Text>
+                <Text style={modalStyles.aiReasonText}>{aiReason}</Text>
+              </View>
+            ) : null}
 
             <View style={modalStyles.fieldGrid}>
               <Field label="Calorias" value={goalInputs.kcal} onChangeText={(v) => updateGoalInput('kcal', v)} keyboardType="numeric" suffix="kcal" />
@@ -507,14 +570,104 @@ function HelpModal({ visible, onClose }: { visible: boolean; onClose: () => void
   );
 }
 
-export function HomeScreen() {
+function NotificationsModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  const notifications = useStore(selectNotifications);
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={modalStyles.bg}>
+        <TouchableOpacity style={modalStyles.backdrop} onPress={onClose} />
+        <View style={modalStyles.sheet}>
+          <View style={modalStyles.handle} />
+          <View style={modalStyles.header}>
+            <Text style={modalStyles.title}>Notificações</Text>
+            <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn}>
+              <MaterialIcons name="close" size={20} color={Colors.gray600} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView contentContainerStyle={modalStyles.scroll}>
+            {notifications.length === 0 ? (
+              <View style={modalStyles.emptyNotice}>
+                <MaterialIcons name="notifications-none" size={34} color={Colors.gray400} />
+                <Text style={modalStyles.emptyNoticeText}>Feedbacks e dicas aparecerão aqui.</Text>
+              </View>
+            ) : (
+              notifications.map((item) => (
+                <View key={item.id} style={modalStyles.noticeCard}>
+                  <Text style={modalStyles.noticeTitle}>{item.userName || 'NutriMeta'}</Text>
+                  <Text style={modalStyles.noticeText}>{item.message}</Text>
+                </View>
+              ))
+            )}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function WaterModal({
+  visible,
+  onClose,
+  onAdd,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onAdd: (amountMl: number) => void;
+}) {
+  const options = [
+    { label: '100 ml', sub: 'alguns goles', amount: 100 },
+    { label: '250 ml', sub: '1 copo', amount: 250 },
+    { label: '500 ml', sub: 'garrafa pequena', amount: 500 },
+    { label: '1 litro', sub: 'garrafa grande', amount: 1000 },
+  ];
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={waterStyles.bg}>
+        <TouchableOpacity style={waterStyles.backdrop} onPress={onClose} />
+        <View style={waterStyles.card}>
+          <Text style={waterStyles.title}>Quanto de água você bebeu?</Text>
+          <View style={waterStyles.grid}>
+            {options.map((option) => (
+              <TouchableOpacity
+                key={option.amount}
+                style={waterStyles.option}
+                onPress={() => {
+                  onAdd(option.amount);
+                  onClose();
+                }}
+              >
+                <Text style={waterStyles.optionTitle}>{option.label}</Text>
+                <Text style={waterStyles.optionSub}>{option.sub}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+export function HomeScreen({
+  waterOpen,
+  onWaterClose,
+  onAddWater,
+}: {
+  waterOpen: boolean;
+  onWaterClose: () => void;
+  onAddWater: (amountMl: number) => void;
+}) {
   const user = useStore((s) => s.user);
   const profile = useStore((s) => s.profile);
   const clearAuth = useStore((s) => s.clearAuth);
+  const addWater = useStore((s) => s.addWater);
   const todayLog = useStore(selectTodayLog);
   const goals = useStore(selectGoals);
+  const unreadCount = useStore(selectUnreadCount);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
 
   const totals: FoodNutrition = useMemo(
     () => todayLog?.totalNutrition ?? { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
@@ -522,6 +675,7 @@ export function HomeScreen() {
   );
 
   const safeGoals: MacroGoals = { ...DEFAULT_GOALS, ...(goals ?? {}) };
+  const waterMl = todayLog?.waterMl ?? 0;
   const kcalPct = macroPercent(totals.kcal, safeGoals.kcal);
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Bom dia' : hour < 18 ? 'Boa tarde' : 'Boa noite';
@@ -544,9 +698,8 @@ export function HomeScreen() {
           try {
             await signOut();
           } catch {
-            // Even if Firebase is offline, clear the local session.
+            // Even if Firebase is offline, clear the in-memory app state.
           } finally {
-            await clearSession();
             clearAuth();
           }
         },
@@ -568,6 +721,10 @@ export function HomeScreen() {
           <Text style={styles.dateLabel}>{today}</Text>
         </View>
         <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.helpButton} onPress={() => setNotificationsOpen(true)}>
+            <MaterialIcons name="notifications-none" size={21} color={Colors.green600} />
+            {unreadCount > 0 && <View style={styles.notificationDot} />}
+          </TouchableOpacity>
           <TouchableOpacity style={styles.helpButton} onPress={() => setHelpOpen(true)}>
             <MaterialIcons name="help-outline" size={21} color={Colors.green600} />
           </TouchableOpacity>
@@ -605,7 +762,7 @@ export function HomeScreen() {
               <Text style={styles.remainLabel}>consumidas</Text>
             </View>
             <View style={styles.remainItem}>
-              <Text style={styles.remainVal}>{safeGoals.water}</Text>
+              <Text style={styles.remainVal}>{waterMl}/{safeGoals.water}</Text>
               <Text style={styles.remainLabel}>ml de água</Text>
             </View>
           </View>
@@ -618,7 +775,7 @@ export function HomeScreen() {
           <NutritionCard label="Fibras" emoji="🥦" current={totals.fiber} goal={safeGoals.fiber} unit="g" color={MacroColors.fiber.primary} />
           <NutritionCard label="Açúcar" emoji="🍬" current={totals.sugar ?? 0} goal={safeGoals.sugar} unit="g" color={Colors.purple} mode="limit" />
           <NutritionCard label="Sódio" emoji="🧂" current={totals.sodium ?? 0} goal={safeGoals.sodium} unit="mg" color={Colors.warning} mode="limit" />
-          <NutritionCard label="Água" emoji="💧" current={0} goal={safeGoals.water} unit="ml" color={Colors.info} />
+          <NutritionCard label="Água" emoji="💧" current={waterMl} goal={safeGoals.water} unit="ml" color={Colors.info} />
           <NutritionCard label="Calorias" emoji="⚡" current={totals.kcal} goal={safeGoals.kcal} unit="" color={Colors.green400} />
         </View>
 
@@ -648,6 +805,8 @@ export function HomeScreen() {
 
       <SettingsModal visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <HelpModal visible={helpOpen} onClose={() => setHelpOpen(false)} />
+      <NotificationsModal visible={notificationsOpen} onClose={() => setNotificationsOpen(false)} />
+      <WaterModal visible={waterOpen} onClose={onWaterClose} onAdd={onAddWater} />
     </SafeAreaView>
   );
 }
@@ -687,6 +846,15 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  notificationDot: {
+    position: 'absolute',
+    top: 7,
+    right: 7,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Colors.danger,
   },
   settingsButton: {
     width: 48,
@@ -810,8 +978,15 @@ const modalStyles = StyleSheet.create({
   pillText: { color: Colors.gray600, fontWeight: Typography.semibold, fontSize: Typography.sm },
   pillTextActive: { color: Colors.green600 },
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.sm },
+  goalActionRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: Spacing.xs, flex: 1 },
   recalcBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green400 },
   recalcText: { color: Colors.green600, fontWeight: Typography.bold, fontSize: Typography.sm },
+  aiBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.green600, minWidth: 112, alignItems: 'center' },
+  aiText: { color: Colors.white, fontWeight: Typography.bold, fontSize: Typography.sm },
+  btnDisabled: { opacity: 0.6 },
+  aiReasonBox: { backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green100, borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.md },
+  aiReasonTitle: { fontSize: Typography.xs, color: Colors.green600, fontWeight: Typography.bold, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 3 },
+  aiReasonText: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 19 },
   actions: { flexDirection: 'row', gap: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
   cancelBtn: { flex: 1, alignItems: 'center', paddingVertical: Spacing.md, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
   cancelText: { color: Colors.gray600, fontWeight: Typography.semibold },
@@ -851,4 +1026,20 @@ const modalStyles = StyleSheet.create({
     borderRadius: Radius.md,
     padding: Spacing.md,
   },
+  emptyNotice: { alignItems: 'center', justifyContent: 'center', padding: Spacing.xl },
+  emptyNoticeText: { marginTop: Spacing.sm, fontSize: Typography.sm, color: Colors.gray400, textAlign: 'center' },
+  noticeCard: { backgroundColor: Colors.gray50, borderRadius: Radius.md, padding: Spacing.md, marginBottom: Spacing.sm },
+  noticeTitle: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray800, marginBottom: 4 },
+  noticeText: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 19 },
+});
+
+const waterStyles = StyleSheet.create({
+  bg: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.base },
+  backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.35)' },
+  card: { width: '100%', maxWidth: 380, backgroundColor: Colors.white, borderRadius: Radius.xl, padding: Spacing.base, ...Shadows.lg },
+  title: { fontSize: Typography.lg, fontWeight: Typography.bold, color: Colors.gray800, marginBottom: Spacing.md, textAlign: 'center' },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  option: { width: '48%', backgroundColor: Colors.carbsL, borderWidth: 1, borderColor: '#B9D8F4', borderRadius: Radius.md, padding: Spacing.md, alignItems: 'center' },
+  optionTitle: { fontSize: Typography.lg, fontWeight: Typography.bold, color: Colors.info },
+  optionSub: { marginTop: 3, fontSize: Typography.xs, color: Colors.gray600 },
 });

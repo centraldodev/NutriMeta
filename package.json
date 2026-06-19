@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@expo/metro-runtime": "~56.0.15",
-    "@expo/vector-icons": "^15.0.2",
+    "@expo/vector-icons": "15.0.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "^56.0.12",
     "expo-auth-session": "~56.0.14",
@@ -33,6 +33,9 @@
   },
   "devDependencies": {
     "@types/react": "^19.2.7",
-    "typescript": "~6.0.3"
+    "typescript": "~6.0.3",
+    "webpack": "^5.107.2",
+    "webpack-cli": "^7.0.3",
+    "webpack-dev-server": "^5.2.5"
   }
 }

@@ -9,16 +9,15 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, Radius, Shadows } from '../constants/theme';
 import { useStore, selectGoals, selectSavedMeals } from '../store';
 import { addMealEntry, incrementMealUsage, removeMealEntry } from '../services/nutritionService';
-import { analyzeMealPhoto } from '../services/photoMealAiService';
+import { analyzeMealPhoto, PhotoMealAiItem } from '../services/photoMealAiService';
+import { customFoodId, getCustomFoods, saveCustomFood } from '../services/customFoodService';
+import { generateFoodNutrition } from '../services/foodNutritionAiService';
 import {
-  findFood,
-  searchFoodDatabase,
   parseQuantityFromText,
   calculateNutrition,
   UNIT_LABELS,
-  FOOD_DB,
 } from '../constants/foodDatabase';
-import { FoodItem, MealEntry, QuantityUnit } from '../types';
+import { FoodItem, MealEntry, MealPeriod, QuantityUnit } from '../types';
 import { generateId, formatDate } from '../utils/nutrition';
 import { isFirebaseConfigured } from '../config';
 
@@ -45,8 +44,24 @@ function getFoodUnits(food: FoodItem | null): QuantityUnit[] {
   return Object.keys(food.nutritionPer) as QuantityUnit[];
 }
 
-function searchFoods(query: string): FoodItem[] {
-  return searchFoodDatabase(query);
+function findAnyFood(query: string, customFoods: FoodItem[] = []): FoodItem | undefined {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return customFoods.find((food) =>
+    food.name.toLowerCase() === normalized ||
+    food.aliases.some((alias) => alias.toLowerCase() === normalized)
+  );
+}
+
+function searchFoods(query: string, customFoods: FoodItem[] = []): FoodItem[] {
+  const customMatches = customFoods.filter((food) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return food.name.toLowerCase().includes(q) ||
+      food.aliases.some((alias) => alias.toLowerCase().includes(q));
+  });
+
+  return customMatches;
 }
 
 function parseQtyInput(value: string): number {
@@ -63,7 +78,37 @@ type MealDraft = {
   unit: QuantityUnit;
   nutrition: ReturnType<typeof calculateNutrition>;
   sourceNote?: string;
+  resolving?: boolean;
+  resolveFailed?: boolean;
 };
+
+type MealEntryPayload = Omit<MealEntry, 'id' | 'userId' | 'addedAt'>;
+
+const MEAL_PERIODS: { key: MealPeriod; label: string; icon: string }[] = [
+  { key: 'breakfast', label: 'Café da manhã', icon: 'wb-sunny' },
+  { key: 'lunch', label: 'Almoço', icon: 'restaurant' },
+  { key: 'dinner', label: 'Jantar', icon: 'nightlight' },
+  { key: 'snack', label: 'Lanche', icon: 'bakery-dining' },
+];
+
+const MEAL_PERIOD_LABELS: Record<MealPeriod, string> = {
+  breakfast: 'Café da manhã',
+  lunch: 'Almoço',
+  dinner: 'Jantar',
+  snack: 'Lanche',
+};
+
+function getDefaultMealPeriod(date = new Date()): MealPeriod {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 10) return 'breakfast';
+  if (hour >= 11 && hour < 15) return 'lunch';
+  if (hour >= 18 && hour < 22) return 'dinner';
+  return 'snack';
+}
+
+function getEntryMealPeriod(entry: MealEntry): MealPeriod {
+  return entry.mealPeriod ?? getDefaultMealPeriod(new Date(entry.addedAt));
+}
 
 const QUANTITY_WORDS: Record<string, number> = {
   um: 1,
@@ -111,7 +156,7 @@ function parseVoiceQuantity(segment: string, food: FoodItem): { quantity: number
   };
 }
 
-function splitVoiceText(rawText: string): string[] {
+function splitVoiceText(rawText: string, customFoods: FoodItem[] = []): string[] {
   const base = rawText
     .replace(/\s+(?:e|mais|com|tamb[eé]m)\s+/gi, ',')
     .split(/[,;]/)
@@ -121,7 +166,7 @@ function splitVoiceText(rawText: string): string[] {
   if (base.length > 1) return base;
 
   const text = cleanVoiceSegment(rawText);
-  const matches = FOOD_DB
+  const matches = customFoods
     .flatMap((food) => [food.name, ...food.aliases].map((term) => ({ food, term })))
     .map(({ food, term }) => {
       const index = text.toLowerCase().indexOf(term.toLowerCase());
@@ -141,13 +186,25 @@ function splitVoiceText(rawText: string): string[] {
     .filter(Boolean);
 }
 
-function parseVoiceMeal(rawText: string): MealDraft[] {
-  return splitVoiceText(rawText).flatMap((segment, index) => {
-    const food = findFood(segment);
-    if (!food) return [];
-    const parsed = parseVoiceQuantity(segment, food);
-    const unit = food.nutritionPer[parsed.unit] ? parsed.unit : food.defaultUnit;
+function parseVoiceMeal(rawText: string, customFoods: FoodItem[] = []): MealDraft[] {
+  return splitVoiceText(rawText, customFoods).flatMap((segment, index): MealDraft[] => {
+    const food = findAnyFood(segment, customFoods);
+    const parsed = food ? parseVoiceQuantity(segment, food) : parseQuantityFromText(segment);
     const quantity = parsed.quantity > 0 ? parsed.quantity : 1;
+    if (!food) {
+      return [{
+        key: `voice_missing_${index}_${segment}_${quantity}_${parsed.unit}`,
+        food: null,
+        foodText: segment,
+        foodFound: false,
+        quantity,
+        unit: parsed.unit,
+        nutrition: emptyNutrition(),
+        sourceNote: 'IA vai cadastrar este alimento na base compartilhada.',
+        resolving: false,
+      }];
+    }
+    const unit = food.nutritionPer[parsed.unit] ? parsed.unit : food.defaultUnit;
     return [{
       key: `${food.id}_${index}_${quantity}_${unit}`,
       food,
@@ -163,6 +220,36 @@ function parseVoiceMeal(rawText: string): MealDraft[] {
 
 function emptyNutrition(): ReturnType<typeof calculateNutrition> {
   return { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 };
+}
+
+function normalizeAiFoodName(name: string) {
+  return name.trim().replace(/\s+/g, ' ');
+}
+
+function createAiFood(item: PhotoMealAiItem, index: number): FoodItem | null {
+  const nutrition = item.nutritionPerUnit;
+  const name = normalizeAiFoodName(item.foodName);
+  if (!name || !nutrition || nutrition.kcal <= 0) return null;
+
+  return {
+    id: customFoodId(name),
+    name,
+    emoji: item.emoji?.trim() || '🍽️',
+    aliases: [name.toLowerCase()],
+    defaultUnit: item.unit,
+    nutritionPer: {
+      [item.unit]: nutrition,
+    },
+  };
+}
+
+function createLocalEntry(userId: string, payload: MealEntryPayload): MealEntry {
+  return {
+    ...payload,
+    id: generateId(),
+    userId,
+    addedAt: new Date(),
+  };
 }
 
 function recalcMealDraft(item: MealDraft, changes: Partial<MealDraft>): MealDraft {
@@ -188,11 +275,13 @@ function recalcMealDraft(item: MealDraft, changes: Partial<MealDraft>): MealDraf
 // ─── Add Meal Modal ───────────────────────────────────────────────────────────
 
 function AddMealModal({
-  visible, onClose, onAdded,
+  visible, onClose, onAdded, customFoods, onCreateFood,
 }: {
   visible: boolean;
   onClose: () => void;
   onAdded: (entry: MealEntry) => void;
+  customFoods: FoodItem[];
+  onCreateFood: (foodName: string, preferredUnit: QuantityUnit) => Promise<FoodItem>;
 }) {
   const goals    = useStore(selectGoals);
   const user     = useStore((s) => s.user);
@@ -207,13 +296,14 @@ function AddMealModal({
   const [saving,    setSaving]    = useState(false);
   const [foodItem,  setFoodItem]  = useState<FoodItem | null>(null);
   const [addedCount, setAddedCount] = useState(0);
+  const [mealPeriod, setMealPeriod] = useState<MealPeriod>(getDefaultMealPeriod());
 
-  const suggestions = React.useMemo(() => searchFoods(foodQuery), [foodQuery]);
+  const suggestions = React.useMemo(() => searchFoods(foodQuery, customFoods), [customFoods, foodQuery]);
   const availableUnits = React.useMemo(() => getFoodUnits(foodItem), [foodItem]);
   const frequentFoods = React.useMemo(() => {
     const counts = new Map<string, { food: FoodItem; count: number }>();
     const addFood = (foodName: string, amount = 1) => {
-      const food = findFood(foodName);
+      const food = findAnyFood(foodName, customFoods);
       if (!food) return;
       const current = counts.get(food.id);
       counts.set(food.id, { food, count: (current?.count ?? 0) + amount });
@@ -228,16 +318,16 @@ function AddMealModal({
       .sort((a, b) => b.count - a.count || a.food.name.localeCompare(b.food.name))
       .map((item) => item.food);
 
-    return ranked.length > 0 ? ranked.slice(0, 10) : FOOD_DB.slice(0, 10);
-  }, [savedMeals, todayLog]);
+    return ranked.length > 0 ? ranked.slice(0, 10) : customFoods.slice(0, 10);
+  }, [customFoods, savedMeals, todayLog]);
 
   const estimate = useCallback(() => {
-    const food = foodItem ?? findFood(foodQuery);
+    const food = foodItem ?? findAnyFood(foodQuery, customFoods);
     if (!food) { setEstimated(null); return; }
     const selectedUnit = food.nutritionPer[unit] ? unit : food.defaultUnit;
     const nutr = calculateNutrition(food, parseQtyInput(quantity), selectedUnit);
     setEstimated(nutr);
-  }, [foodItem, foodQuery, quantity, unit]);
+  }, [customFoods, foodItem, foodQuery, quantity, unit]);
 
   React.useEffect(() => { estimate(); }, [estimate]);
 
@@ -249,6 +339,7 @@ function AddMealModal({
     setEstimated(null);
     setFoodItem(null);
     setAddedCount(0);
+    setMealPeriod(getDefaultMealPeriod());
   }, [visible]);
 
   function handleSelectFood(food: FoodItem) {
@@ -267,31 +358,41 @@ function AddMealModal({
 
   async function handleAdd() {
     if (!user || !goals) return;
-    const food = foodItem ?? findFood(foodQuery);
-    if (!food) { Alert.alert('Alimento não encontrado', 'Tente outro nome ou seja mais específico.'); return; }
-
-    const selectedUnit = food.nutritionPer[unit] ? unit : food.defaultUnit;
-    const parsedQuantity = parseQtyInput(quantity);
-    const nutr = calculateNutrition(food, parsedQuantity, selectedUnit);
-
     setSaving(true);
     try {
+      let food = foodItem ?? findAnyFood(foodQuery, customFoods);
+      if (!food) {
+        food = await onCreateFood(foodQuery, unit);
+        setFoodItem(food);
+        setFoodQuery(food.name);
+        setUnit(food.defaultUnit);
+      }
+
+      const selectedUnit = food.nutritionPer[unit] ? unit : food.defaultUnit;
+      const parsedQuantity = parseQtyInput(quantity);
+      const nutr = calculateNutrition(food, parsedQuantity, selectedUnit);
       const payload = {
         foodName:  `${food.name} (${parsedQuantity} ${UNIT_LABELS[selectedUnit]})`,
         emoji:     food.emoji,
         quantity:  parsedQuantity,
         unit:      selectedUnit,
         nutrition: nutr,
+        mealPeriod,
         source:    'manual',
-      } as const;
-      const entry = isFirebaseConfigured && user.id !== 'dev_user'
-        ? await addMealEntry(user.id, goals, payload)
-        : {
-            ...payload,
-            id: generateId(),
-            userId: user.id,
-            addedAt: new Date(),
-          };
+      } satisfies MealEntryPayload;
+      let entry: MealEntry;
+      try {
+        entry = isFirebaseConfigured && user.id !== 'dev_user'
+          ? await addMealEntry(user.id, goals, payload)
+          : createLocalEntry(user.id, payload);
+      } catch (error) {
+        console.warn('Manual meal save failed, using local entry', error);
+        entry = createLocalEntry(user.id, payload);
+        Alert.alert(
+          'Salvo neste aparelho',
+          'Não consegui sincronizar com o Firebase agora, mas registrei o alimento localmente.'
+        );
+      }
       addEntry(entry);
       onAdded(entry);
       setFoodQuery('');
@@ -300,12 +401,15 @@ function AddMealModal({
       setEstimated(null);
       setFoodItem(null);
       setAddedCount((count) => count + 1);
+    } catch (error) {
+      console.warn('AI food creation failed', error);
+      Alert.alert('Alimento não encontrado', 'Não consegui cadastrar este alimento automaticamente agora. Tente outro nome ou seja mais específico.');
     } finally {
       setSaving(false);
     }
   }
 
-  const isEmpty = !estimated;
+  const isEmpty = !foodQuery.trim();
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -376,7 +480,9 @@ function AddMealModal({
             </ScrollView>
           </View>
 
-          <View style={modal.bottomPanel}>
+            <View style={modal.bottomPanel}>
+            <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
+
             <View style={modal.qtyRow}>
               <View style={modal.qtyField}>
                 <Text style={modal.label}>Quantidade</Text>
@@ -449,19 +555,52 @@ function EstVal({ label, val, color }: { label: string; val: string; color?: str
   );
 }
 
+function MealPeriodPicker({
+  value,
+  onChange,
+}: {
+  value: MealPeriod;
+  onChange: (period: MealPeriod) => void;
+}) {
+  return (
+    <View style={modal.periodBox}>
+      <Text style={modal.label}>Refeição</Text>
+      <View style={modal.periodRow}>
+        {MEAL_PERIODS.map((period) => {
+          const active = period.key === value;
+          return (
+            <TouchableOpacity
+              key={period.key}
+              style={[modal.periodChip, active && modal.periodChipActive]}
+              onPress={() => onChange(period.key)}
+            >
+              <MaterialIcons name={period.icon as any} size={16} color={active ? Colors.white : Colors.gray600} />
+              <Text style={[modal.periodText, active && modal.periodTextActive]}>{period.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 // ─── Voice Modal ──────────────────────────────────────────────────────────────
 
 function VoiceModal({
-  visible, onClose, onConfirm,
+  visible, onClose, onConfirm, customFoods, onCreateFood,
 }: {
   visible: boolean;
   onClose: () => void;
-  onConfirm: (items: MealDraft[]) => void;
+  onConfirm: (items: MealDraft[], mealPeriod: MealPeriod) => Promise<void> | void;
+  customFoods: FoodItem[];
+  onCreateFood: (foodName: string, preferredUnit: QuantityUnit) => Promise<FoodItem>;
 }) {
   const [listening,   setListening]   = useState(false);
   const [transcript,  setTranscript]  = useState('');
   const [editableDrafts, setEditableDrafts] = useState<MealDraft[]>([]);
   const [addedCount, setAddedCount] = useState(0);
+  const [confirming, setConfirming] = useState(false);
+  const [mealPeriod, setMealPeriod] = useState<MealPeriod>(getDefaultMealPeriod());
   const speechModule = React.useMemo(loadSpeechRecognitionModule, []);
   const hasInvalidDraft = editableDrafts.some((item) => !item.foodFound);
 
@@ -470,11 +609,50 @@ function VoiceModal({
     setTranscript('');
     setEditableDrafts([]);
     setAddedCount(0);
+    setConfirming(false);
+    setMealPeriod(getDefaultMealPeriod());
   }, [visible]);
 
   React.useEffect(() => {
-    setEditableDrafts(parseVoiceMeal(transcript));
-  }, [transcript]);
+    setEditableDrafts(parseVoiceMeal(transcript, customFoods));
+  }, [customFoods, transcript]);
+
+  React.useEffect(() => {
+    const missing = editableDrafts.filter((item) => !item.food && !item.resolving && !item.resolveFailed);
+    if (missing.length === 0) return;
+
+    missing.forEach((item) => {
+      setEditableDrafts((items) => items.map((draft) =>
+        draft.key === item.key
+          ? { ...draft, resolving: true, sourceNote: 'Cadastrando alimento com IA...' }
+          : draft
+      ));
+
+      onCreateFood(item.foodText, item.unit)
+        .then((food) => {
+          setEditableDrafts((items) => items.map((draft) => {
+            if (draft.key !== item.key) return draft;
+            const unit = food.nutritionPer[draft.unit] ? draft.unit : food.defaultUnit;
+            return recalcMealDraft({
+              ...draft,
+              food,
+              foodText: food.name,
+              foodFound: true,
+              resolving: false,
+              sourceNote: 'IA cadastrou este alimento na base compartilhada.',
+            }, { unit });
+          }));
+        })
+        .catch((error) => {
+          console.warn('Voice AI food creation failed', error);
+          setEditableDrafts((items) => items.map((draft) =>
+            draft.key === item.key
+              ? { ...draft, resolving: false, resolveFailed: true, sourceNote: 'Não consegui cadastrar este alimento automaticamente.' }
+              : draft
+          ));
+        });
+    });
+  }, [editableDrafts, onCreateFood]);
 
   React.useEffect(() => {
     if (!speechModule) return undefined;
@@ -531,11 +709,17 @@ function VoiceModal({
     }
   }
 
-  function confirm() {
-    onConfirm(editableDrafts);
-    setAddedCount((count) => count + editableDrafts.length);
-    setTranscript('');
-    setEditableDrafts([]);
+  async function confirm() {
+    const itemsToSave = editableDrafts;
+    setConfirming(true);
+    try {
+      await onConfirm(itemsToSave, mealPeriod);
+      setAddedCount((count) => count + itemsToSave.length);
+      setTranscript('');
+      setEditableDrafts([]);
+    } finally {
+      setConfirming(false);
+    }
   }
 
   function updateDraft(key: string, updater: (item: MealDraft) => MealDraft) {
@@ -548,9 +732,9 @@ function VoiceModal({
 
   function updateDraftFood(key: string, value: string) {
     updateDraft(key, (item) => {
-      const found = findFood(value);
+      const found = findAnyFood(value, customFoods);
       if (!found) {
-        return { ...item, foodText: value, foodFound: false };
+        return { ...item, foodText: value, foodFound: false, resolveFailed: false };
       }
       const unit = found.nutritionPer[item.unit] ? item.unit : found.defaultUnit;
       return recalcMealDraft(item, {
@@ -606,6 +790,7 @@ function VoiceModal({
           </View>
 
           <View style={voiceModal.previewBox}>
+            <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
             <Text style={voiceModal.exTitle}>Itens detectados</Text>
             {editableDrafts.length === 0 ? (
               <Text style={voiceModal.previewEmpty}>Fale algo como: "4 colheres de arroz, 1 concha de feijão e 1 filé de frango".</Text>
@@ -622,7 +807,7 @@ function VoiceModal({
                         placeholder="Alimento"
                         placeholderTextColor={Colors.gray400}
                       />
-                      {!item.foodFound && <Text style={voiceModal.errorText}>Alimento não encontrado na base.</Text>}
+                      {!item.foodFound && <Text style={voiceModal.errorText}>{item.resolving ? 'Cadastrando com IA...' : 'Alimento ainda sem cadastro.'}</Text>}
                     </View>
                     <TouchableOpacity style={voiceModal.removeBtn} onPress={() => removeDraft(item.key)}>
                       <MaterialIcons name="close" size={18} color={Colors.gray600} />
@@ -681,11 +866,11 @@ function VoiceModal({
               <Text style={modal.btnCancelText}>Fechar</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[modal.btnAdd, (editableDrafts.length === 0 || hasInvalidDraft) && modal.btnDisabled]}
+              style={[modal.btnAdd, (editableDrafts.length === 0 || hasInvalidDraft || confirming) && modal.btnDisabled]}
               onPress={confirm}
-              disabled={editableDrafts.length === 0 || hasInvalidDraft}
+              disabled={editableDrafts.length === 0 || hasInvalidDraft || confirming}
             >
-              <Text style={modal.btnAddText}>Adicionar e continuar</Text>
+              {confirming ? <ActivityIndicator color={Colors.white} /> : <Text style={modal.btnAddText}>Adicionar e continuar</Text>}
             </TouchableOpacity>
           </View>
         </View>
@@ -697,17 +882,20 @@ function VoiceModal({
 // ─── Photo Modal ──────────────────────────────────────────────────────────────
 
 function PhotoModal({
-  visible, onClose, onConfirm,
+  visible, onClose, onConfirm, customFoods,
 }: {
   visible: boolean;
   onClose: () => void;
-  onConfirm: (items: MealDraft[]) => void;
+  onConfirm: (items: MealDraft[], mealPeriod: MealPeriod) => Promise<void> | void;
+  customFoods: FoodItem[];
 }) {
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [summary, setSummary] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [editableDrafts, setEditableDrafts] = useState<MealDraft[]>([]);
   const [addedCount, setAddedCount] = useState(0);
+  const [confirming, setConfirming] = useState(false);
+  const [mealPeriod, setMealPeriod] = useState<MealPeriod>(getDefaultMealPeriod());
   const hasInvalidDraft = editableDrafts.some((item) => !item.foodFound);
 
   React.useEffect(() => {
@@ -717,6 +905,8 @@ function PhotoModal({
     setAnalyzing(false);
     setEditableDrafts([]);
     setAddedCount(0);
+    setConfirming(false);
+    setMealPeriod(getDefaultMealPeriod());
   }, [visible]);
 
   async function pickImage(source: 'camera' | 'library') {
@@ -762,9 +952,11 @@ function PhotoModal({
       const result = await analyzeMealPhoto(base64, mimeType);
       setSummary(result.summary ?? '');
       const drafts = result.items.map((item, index) => {
-        const food = findFood(item.foodName) ?? null;
+        const foundFood = findAnyFood(item.foodName, customFoods);
+        const food = foundFood ?? createAiFood(item, index);
         const unit = food && food.nutritionPer[item.unit] ? item.unit : food?.defaultUnit ?? item.unit;
         const quantity = item.quantity > 0 ? item.quantity : 1;
+        const isAiCreated = !foundFood && Boolean(food);
         return {
           key: `photo_${index}_${item.foodName}_${quantity}_${unit}`,
           food,
@@ -774,10 +966,10 @@ function PhotoModal({
           unit,
           nutrition: food ? calculateNutrition(food, quantity, unit) : emptyNutrition(),
           sourceNote: item.notes
-            ? `IA: ${item.notes}${item.confidence != null ? ` · confiança ${Math.round(item.confidence * 100)}%` : ''}`
+            ? `IA: ${item.notes}${isAiCreated ? ' · alimento cadastrado por estimativa' : ''}${item.confidence != null ? ` · confiança ${Math.round(item.confidence * 100)}%` : ''}`
             : item.confidence != null
-              ? `IA: confiança ${Math.round(item.confidence * 100)}%`
-              : undefined,
+              ? `IA: ${isAiCreated ? 'alimento cadastrado por estimativa · ' : ''}confiança ${Math.round(item.confidence * 100)}%`
+              : isAiCreated ? 'IA: alimento cadastrado por estimativa nutricional' : undefined,
         };
       });
       setEditableDrafts(drafts);
@@ -792,12 +984,18 @@ function PhotoModal({
     }
   }
 
-  function confirm() {
-    onConfirm(editableDrafts);
-    setAddedCount((count) => count + editableDrafts.length);
-    setImageUri(null);
-    setSummary('');
-    setEditableDrafts([]);
+  async function confirm() {
+    const itemsToSave = editableDrafts;
+    setConfirming(true);
+    try {
+      await onConfirm(itemsToSave, mealPeriod);
+      setAddedCount((count) => count + itemsToSave.length);
+      setImageUri(null);
+      setSummary('');
+      setEditableDrafts([]);
+    } finally {
+      setConfirming(false);
+    }
   }
 
   function updateDraft(key: string, updater: (item: MealDraft) => MealDraft) {
@@ -810,9 +1008,9 @@ function PhotoModal({
 
   function updateDraftFood(key: string, value: string) {
     updateDraft(key, (item) => {
-      const found = findFood(value);
+      const found = findAnyFood(value, customFoods);
       if (!found) {
-        return { ...item, food: null, foodText: value, foodFound: false, nutrition: emptyNutrition() };
+        return { ...item, food: null, foodText: value, foodFound: false, resolveFailed: false, nutrition: emptyNutrition() };
       }
       const unit = found.nutritionPer[item.unit] ? item.unit : found.defaultUnit;
       return recalcMealDraft(item, {
@@ -880,6 +1078,7 @@ function PhotoModal({
           {summary ? <Text style={photoModal.summary}>{summary}</Text> : null}
 
           <View style={voiceModal.previewBox}>
+            <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
             <Text style={voiceModal.exTitle}>Itens detectados</Text>
             {editableDrafts.length === 0 ? (
               <Text style={voiceModal.previewEmpty}>Depois da análise, confira os alimentos aqui e ajuste o que precisar.</Text>
@@ -951,11 +1150,11 @@ function PhotoModal({
               <Text style={modal.btnCancelText}>Fechar</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[modal.btnAdd, (editableDrafts.length === 0 || hasInvalidDraft || analyzing) && modal.btnDisabled]}
+              style={[modal.btnAdd, (editableDrafts.length === 0 || hasInvalidDraft || analyzing || confirming) && modal.btnDisabled]}
               onPress={confirm}
-              disabled={editableDrafts.length === 0 || hasInvalidDraft || analyzing}
+              disabled={editableDrafts.length === 0 || hasInvalidDraft || analyzing || confirming}
             >
-              <Text style={modal.btnAddText}>Adicionar e continuar</Text>
+              {confirming ? <ActivityIndicator color={Colors.white} /> : <Text style={modal.btnAddText}>Adicionar e continuar</Text>}
             </TouchableOpacity>
           </View>
         </View>
@@ -968,11 +1167,13 @@ function PhotoModal({
 
 function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete: () => void }) {
   const time = new Date(entry.addedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const mealPeriod = getEntryMealPeriod(entry);
   return (
     <View style={logStyle.row}>
       <Text style={logStyle.emoji}>{entry.emoji}</Text>
       <View style={logStyle.info}>
         <View style={logStyle.infoTop}>
+          <View style={logStyle.periodBadge}><Text style={logStyle.periodTxt}>{MEAL_PERIOD_LABELS[mealPeriod]}</Text></View>
           <View style={logStyle.timeBadge}><Text style={logStyle.timeTxt}>{time}</Text></View>
         </View>
         <Text style={logStyle.name}>{entry.foodName}</Text>
@@ -1004,13 +1205,51 @@ export function AddMealScreen() {
   const [addModal,   setAddModal]   = useState(false);
   const [voiceModal, setVoiceModal] = useState(false);
   const [photoModal, setPhotoModal] = useState(false);
+  const [customFoods, setCustomFoods] = useState<FoodItem[]>([]);
 
-  async function saveDraftItems(items: MealDraft[], source: 'voice' | 'photo') {
-    if (!user || !goals) return;
+  React.useEffect(() => {
+    let active = true;
+    if (!user) {
+      setCustomFoods([]);
+      return undefined;
+    }
+
+    getCustomFoods(user.id)
+      .then((foods) => {
+        if (active) setCustomFoods(foods);
+      })
+      .catch((error) => {
+        console.warn('Failed to load custom foods', error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [user]);
+
+  const handleCreateFood = useCallback(async (foodName: string, preferredUnit: QuantityUnit) => {
+    if (!user) throw new Error('Missing user');
+    const existing = findAnyFood(foodName, customFoods);
+    if (existing) return existing;
+
+    const food = await generateFoodNutrition(foodName, preferredUnit);
+    const foods = await saveCustomFood(user.id, food);
+    setCustomFoods(foods);
+    return food;
+  }, [customFoods, user]);
+
+  async function saveDraftItems(items: MealDraft[], source: 'voice' | 'photo', mealPeriod: MealPeriod) {
+    if (!user || !goals) {
+      Alert.alert('Perfil não carregado', 'Aguarde o app carregar seus dados e tente novamente.');
+      throw new Error('Missing user or goals');
+    }
     if (items.length === 0) {
       Alert.alert('Nenhum alimento para adicionar', 'Revise os itens detectados antes de confirmar.');
-      return;
+      throw new Error('No meal draft items');
     }
+
+    let savedCount = 0;
+    let firebaseFallbackCount = 0;
 
     for (const item of items) {
       if (!item.food) continue;
@@ -1020,30 +1259,54 @@ export function AddMealScreen() {
         quantity:  item.quantity,
         unit:      item.unit,
         nutrition: item.nutrition,
+        mealPeriod,
         source,
-      } as const;
-      const entry = isFirebaseConfigured && user.id !== 'dev_user'
-        ? await addMealEntry(user.id, goals, payload)
-        : {
-            ...payload,
-            id: generateId(),
-            userId: user.id,
-            addedAt: new Date(),
-          };
+      } satisfies MealEntryPayload;
+      let entry: MealEntry;
+      try {
+        entry = isFirebaseConfigured && user.id !== 'dev_user'
+          ? await addMealEntry(user.id, goals, payload)
+          : createLocalEntry(user.id, payload);
+      } catch (error) {
+        console.warn(`${source} meal save failed, using local entry`, error);
+        entry = createLocalEntry(user.id, payload);
+        firebaseFallbackCount += 1;
+      }
       addEntryFn(entry);
+      if (source === 'photo' && item.food.id.startsWith('global_')) {
+        try {
+          const foods = await saveCustomFood(user.id, item.food);
+          setCustomFoods(foods);
+        } catch (error) {
+          console.warn('Failed to save custom food', error);
+        }
+      }
+      savedCount += 1;
+    }
+
+    if (savedCount === 0) {
+      Alert.alert('Nenhum alimento válido', 'Revise os itens detectados antes de confirmar.');
+      throw new Error('No valid meal draft items');
+    }
+
+    if (firebaseFallbackCount > 0) {
+      Alert.alert(
+        'Salvo neste aparelho',
+        'Não consegui sincronizar alguns itens com o Firebase agora, mas registrei no dia atual.'
+      );
     }
   }
 
-  async function handleVoiceConfirm(items: MealDraft[]) {
+  async function handleVoiceConfirm(items: MealDraft[], mealPeriod: MealPeriod) {
     if (items.length === 0) {
       Alert.alert('Não entendi os alimentos', 'Tente falar com quantidade e nome do alimento, por exemplo: 2 ovos e 1 fatia de pão.');
       return;
     }
-    await saveDraftItems(items, 'voice');
+    await saveDraftItems(items, 'voice', mealPeriod);
   }
 
-  async function handlePhotoConfirm(items: MealDraft[]) {
-    await saveDraftItems(items, 'photo');
+  async function handlePhotoConfirm(items: MealDraft[], mealPeriod: MealPeriod) {
+    await saveDraftItems(items, 'photo', mealPeriod);
   }
 
   async function quickAdd(mealId: string) {
@@ -1054,7 +1317,7 @@ export function AddMealScreen() {
       await incrementMealUsage(mealId);
     }
     for (const e of meal.entries) {
-      const payload = { ...e, source: 'saved', savedMealId: mealId } as const;
+      const payload = { ...e, mealPeriod: e.mealPeriod ?? getDefaultMealPeriod(), source: 'saved', savedMealId: mealId } satisfies MealEntryPayload;
       const entry = isFirebaseConfigured && user.id !== 'dev_user'
         ? await addMealEntry(user.id, goals, payload)
         : {
@@ -1080,6 +1343,20 @@ export function AddMealScreen() {
   }
 
   const entries = todayLog?.entries ?? [];
+  const groupedEntries = React.useMemo(() => {
+    const groups = new Map<MealPeriod, MealEntry[]>();
+    MEAL_PERIODS.forEach((period) => groups.set(period.key, []));
+    entries.forEach((entry) => {
+      const period = getEntryMealPeriod(entry);
+      groups.set(period, [...(groups.get(period) ?? []), entry]);
+    });
+    return MEAL_PERIODS
+      .map((period) => ({
+        ...period,
+        entries: (groups.get(period.key) ?? []).slice().sort((a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime()),
+      }))
+      .filter((group) => group.entries.length > 0);
+  }, [entries]);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -1133,16 +1410,25 @@ export function AddMealScreen() {
           </View>
         ) : (
           <View style={styles.logList}>
-            {entries.slice().reverse().map((entry) => (
-              <TodayEntry key={entry.id} entry={entry} onDelete={() => handleDeleteEntry(entry)} />
+            {groupedEntries.map((group) => (
+              <View key={group.key} style={logStyle.group}>
+                <View style={logStyle.groupHeader}>
+                  <MaterialIcons name={group.icon as any} size={18} color={Colors.green600} />
+                  <Text style={logStyle.groupTitle}>{group.label}</Text>
+                  <Text style={logStyle.groupCount}>{group.entries.length}</Text>
+                </View>
+                {group.entries.map((entry) => (
+                  <TodayEntry key={entry.id} entry={entry} onDelete={() => handleDeleteEntry(entry)} />
+                ))}
+              </View>
             ))}
           </View>
         )}
       </ScrollView>
 
-      <AddMealModal visible={addModal} onClose={() => setAddModal(false)} onAdded={() => {}} />
-      <VoiceModal   visible={voiceModal} onClose={() => setVoiceModal(false)} onConfirm={handleVoiceConfirm} />
-      <PhotoModal   visible={photoModal} onClose={() => setPhotoModal(false)} onConfirm={handlePhotoConfirm} />
+      <AddMealModal visible={addModal} onClose={() => setAddModal(false)} onAdded={() => {}} customFoods={customFoods} onCreateFood={handleCreateFood} />
+      <VoiceModal   visible={voiceModal} onClose={() => setVoiceModal(false)} onConfirm={handleVoiceConfirm} customFoods={customFoods} onCreateFood={handleCreateFood} />
+      <PhotoModal   visible={photoModal} onClose={() => setPhotoModal(false)} onConfirm={handlePhotoConfirm} customFoods={customFoods} />
     </SafeAreaView>
   );
 }
@@ -1197,10 +1483,16 @@ const styles = StyleSheet.create({
 });
 
 const logStyle = StyleSheet.create({
+  group:    { borderBottomWidth: 1, borderBottomColor: Colors.border },
+  groupHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, backgroundColor: Colors.green50, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
+  groupTitle: { flex: 1, fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.green600 },
+  groupCount: { fontSize: Typography.xs, fontWeight: Typography.bold, color: Colors.green600, backgroundColor: Colors.white, borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 2 },
   row:      { flexDirection: 'row', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border, gap: Spacing.sm },
   emoji:    { fontSize: 24, width: 36, textAlign: 'center' },
   info:     { flex: 1 },
   infoTop:  { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: 2 },
+  periodBadge:{ backgroundColor: Colors.green50, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  periodTxt: { fontSize: Typography.xs, color: Colors.green600, fontWeight: Typography.semibold },
   timeBadge:{ backgroundColor: Colors.gray50, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   timeTxt:  { fontSize: Typography.xs, color: Colors.gray400 },
   name:     { fontSize: Typography.md, fontWeight: Typography.semibold },
@@ -1251,6 +1543,12 @@ const modal = StyleSheet.create({
   unitChipActive: { borderColor: Colors.green400, backgroundColor: Colors.green50 },
   unitChipText: { fontSize: Typography.sm, color: Colors.gray600, fontWeight: Typography.semibold },
   unitChipTextActive: { color: Colors.green600 },
+  periodBox: { marginBottom: Spacing.sm },
+  periodRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  periodChip: { flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, paddingVertical: 8, backgroundColor: Colors.white },
+  periodChipActive: { backgroundColor: Colors.green400, borderColor: Colors.green400 },
+  periodText: { fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.semibold },
+  periodTextActive: { color: Colors.white },
 
   estimateBox:  { backgroundColor: Colors.green50, borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.sm },
   estimateTitle:{ fontSize: Typography.xs, fontWeight: Typography.bold, color: Colors.green600, marginBottom: Spacing.xs },

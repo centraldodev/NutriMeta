@@ -23,8 +23,17 @@ export interface UserProfile {
   activityLevel: ActivityLevel;
   onboardingComplete: boolean;
   groupIds: string[];
+  communityPrivacy?: CommunityPrivacy;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface CommunityPrivacy {
+  showProtein: boolean;
+  showFiber: boolean;
+  showCalories: boolean;
+  showStreak: boolean;
+  showLimits: boolean;
 }
 
 // ─── Nutrition Goals ─────────────────────────────────────────────────────────
@@ -72,6 +81,17 @@ export interface FoodNutrition {
   fiber: number;
   sodium?: number;
   sugar?: number;
+  calcium?: number;     // mg
+  iron?: number;        // mg
+  potassium?: number;   // mg
+  magnesium?: number;   // mg
+  zinc?: number;        // mg
+  vitaminA?: number;    // mcg RAE
+  vitaminC?: number;    // mg
+  vitaminD?: number;    // mcg
+  vitaminE?: number;    // mg
+  vitaminB12?: number;  // mcg
+  folate?: number;      // mcg
 }
 
 export interface FoodItem {
@@ -92,9 +112,12 @@ export interface MealEntry {
   unit: QuantityUnit;
   nutrition: FoodNutrition;                      // calculated total
   addedAt: Date;
+  mealPeriod: MealPeriod;
   source: 'manual' | 'voice' | 'photo' | 'saved';
   savedMealId?: string;
 }
+
+export type MealPeriod = 'breakfast' | 'lunch' | 'dinner' | 'snack';
 
 export interface SavedMeal {
   id: string;
@@ -116,6 +139,7 @@ export interface DailyLog {
   date: string;                                  // YYYY-MM-DD
   entries: MealEntry[];
   totalNutrition: FoodNutrition;
+  waterMl?: number;
   goals: MacroGoals;
   completedGoals: (keyof MacroGoals)[];
   updatedAt: Date;
@@ -141,6 +165,8 @@ export interface GroupMemberStats {
   totalNutrition: FoodNutrition;
   goals: MacroGoals;
   completedGoals: (keyof MacroGoals)[];
+  streakDays?: number;
+  privacy?: CommunityPrivacy;
   points: number;
   rank: number;
   date: string;
@@ -151,11 +177,21 @@ export interface GroupNotification {
   groupId: string;
   userId: string;
   userName: string;
-  type: 'goal_hit' | 'rank_change' | 'streak';
+  type: 'goal_hit' | 'rank_change' | 'streak' | 'app_tip' | 'weekly_insight' | 'nutritionist_feedback';
   macro?: keyof MacroGoals;
   message: string;
   createdAt: Date;
   read: boolean;
+}
+
+export interface CommunityComment {
+  id: string;
+  groupId: string;
+  targetUserId: string;
+  authorId: string;
+  authorName: string;
+  message: string;
+  createdAt: Date;
 }
 
 // ─── Voice ──────────────────────────────────────────────────────────────────

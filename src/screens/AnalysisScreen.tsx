@@ -42,16 +42,29 @@ function getLastNDates(days: number): string[] {
 function averageNutrition(logs: DailyLog[]): FoodNutrition {
   if (logs.length === 0) return EMPTY_TOTAL;
   const total = sumNutrition(logs.map((log) => ({ nutrition: log.totalNutrition ?? EMPTY_TOTAL })));
-  return {
-    kcal: Math.round(total.kcal / logs.length),
-    protein: Math.round((total.protein / logs.length) * 10) / 10,
-    carbs: Math.round((total.carbs / logs.length) * 10) / 10,
-    fat: Math.round((total.fat / logs.length) * 10) / 10,
-    fiber: Math.round((total.fiber / logs.length) * 10) / 10,
-    sodium: Math.round(((total.sodium ?? 0) / logs.length)),
-    sugar: Math.round(((total.sugar ?? 0) / logs.length) * 10) / 10,
-  };
+  const average = { ...EMPTY_TOTAL } as FoodNutrition;
+  (Object.entries(total) as [keyof FoodNutrition, number | undefined][]).forEach(([key, value]) => {
+    if (typeof value !== 'number') return;
+    average[key] = Math.round((value / logs.length) * 10) / 10 as never;
+  });
+  average.kcal = Math.round(average.kcal);
+  average.sodium = Math.round(average.sodium ?? 0);
+  return average;
 }
+
+const MICRO_NUTRIENTS: { key: keyof FoodNutrition; label: string; unit: string }[] = [
+  { key: 'calcium', label: 'Cálcio', unit: 'mg' },
+  { key: 'iron', label: 'Ferro', unit: 'mg' },
+  { key: 'potassium', label: 'Potássio', unit: 'mg' },
+  { key: 'magnesium', label: 'Magnésio', unit: 'mg' },
+  { key: 'zinc', label: 'Zinco', unit: 'mg' },
+  { key: 'vitaminA', label: 'Vitamina A', unit: 'mcg' },
+  { key: 'vitaminC', label: 'Vitamina C', unit: 'mg' },
+  { key: 'vitaminD', label: 'Vitamina D', unit: 'mcg' },
+  { key: 'vitaminE', label: 'Vitamina E', unit: 'mg' },
+  { key: 'vitaminB12', label: 'Vitamina B12', unit: 'mcg' },
+  { key: 'folate', label: 'Folato', unit: 'mcg' },
+];
 
 function shortWeekday(dateString: string): string {
   const [year, month, day] = dateString.split('-').map(Number);
@@ -146,6 +159,15 @@ export function AnalysisScreen() {
     return Array.from(counts.values()).sort((a, b) => b.count - a.count).slice(0, 5);
   }, [logs]);
 
+  const visibleMicros = useMemo(() => (
+    MICRO_NUTRIENTS
+      .map((nutrient) => ({
+        ...nutrient,
+        value: monthAverage[nutrient.key] as number | undefined,
+      }))
+      .filter((nutrient) => (nutrient.value ?? 0) > 0)
+  ), [monthAverage]);
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.headerBar}>
@@ -203,6 +225,23 @@ export function AnalysisScreen() {
               <MacroAverage label="Gorduras" current={monthAverage.fat} goal={safeGoals.fat} color={MacroColors.fat.primary} />
               <MacroAverage label="Fibras" current={monthAverage.fiber} goal={safeGoals.fiber} color={MacroColors.fiber.primary} />
             </View>
+
+            {visibleMicros.length > 0 && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Micronutrientes estimados</Text>
+                <View style={styles.microGrid}>
+                  {visibleMicros.map((nutrient) => (
+                    <View key={nutrient.key} style={styles.microCard}>
+                      <Text style={styles.microLabel}>{nutrient.label}</Text>
+                      <Text style={styles.microValue}>
+                        {Math.round((nutrient.value ?? 0) * 10) / 10}{nutrient.unit}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+                <Text style={styles.microNote}>Média do período com base nos alimentos cadastrados e nas estimativas da IA.</Text>
+              </View>
+            )}
 
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Mais consumidos</Text>
@@ -263,6 +302,11 @@ const styles = StyleSheet.create({
   progressBg: { height: 8, backgroundColor: Colors.gray50, borderRadius: 4, overflow: 'hidden' },
   progressFill: { height: 8, borderRadius: 4 },
   macroHint: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 4 },
+  microGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  microCard: { width: Platform.OS === 'web' ? '23%' : '48%', backgroundColor: Colors.gray50, borderRadius: Radius.md, padding: Spacing.sm },
+  microLabel: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.semibold },
+  microValue: { fontSize: Typography.md, color: Colors.gray800, fontWeight: Typography.bold, marginTop: 3 },
+  microNote: { fontSize: Typography.xs, color: Colors.gray400, lineHeight: 18, marginTop: Spacing.sm },
   foodRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border },
   foodEmoji: { fontSize: 22, width: 34 },
   foodName: { flex: 1, fontSize: Typography.sm, fontWeight: Typography.semibold },

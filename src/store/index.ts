@@ -37,6 +37,7 @@ interface NutritionSlice {
   setSavedMeals:(meals: SavedMeal[]) => void;
   addEntry:     (entry: MealEntry) => void;
   removeEntry:  (entryId: string) => void;
+  addWater:     (amountMl: number) => void;
   setNutritionLoading: (v: boolean) => void;
 }
 
@@ -151,6 +152,44 @@ export const useStore = create<AppStore>((set) => ({
           completedGoals: state.goals
             ? getCompletedGoals(totalNutrition, state.goals)
             : [],
+          updatedAt: new Date(),
+        },
+      };
+    }),
+
+  addWater: (amountMl) =>
+    set((state) => {
+      const current = state.todayLog;
+      const date = formatDate(new Date());
+      const goals = state.goals ?? {
+        kcal: 0,
+        protein: 0,
+        carbs: 0,
+        fat: 0,
+        fiber: 0,
+        water: 0,
+        sugar: 0,
+        sodium: 0,
+      };
+      if (!current) {
+        return {
+          todayLog: {
+            id: `${state.user?.id ?? 'local'}_${date}`,
+            userId: state.user?.id ?? 'local',
+            date,
+            entries: [],
+            totalNutrition: { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
+            waterMl: amountMl,
+            goals,
+            completedGoals: [],
+            updatedAt: new Date(),
+          },
+        };
+      }
+      return {
+        todayLog: {
+          ...current,
+          waterMl: (current.waterMl ?? 0) + amountMl,
           updatedAt: new Date(),
         },
       };

@@ -100,18 +100,15 @@ export function calcMacroGoals(profile: UserProfile): MacroGoals {
 // ─── Sum daily nutrition ──────────────────────────────────────────────────────
 
 export function sumNutrition(entries: { nutrition: FoodNutrition }[]): FoodNutrition {
-  return entries.reduce(
-    (acc, e) => ({
-      kcal:    acc.kcal    + e.nutrition.kcal,
-      protein: round1(acc.protein + e.nutrition.protein),
-      carbs:   round1(acc.carbs   + e.nutrition.carbs),
-      fat:     round1(acc.fat     + e.nutrition.fat),
-      fiber:   round1(acc.fiber   + e.nutrition.fiber),
-      sodium:  (acc.sodium  ?? 0) + (e.nutrition.sodium  ?? 0),
-      sugar:   round1((acc.sugar ?? 0) + (e.nutrition.sugar ?? 0)),
-    }),
-    { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 }
-  );
+  return entries.reduce((acc, e) => {
+    (Object.entries(e.nutrition) as [keyof FoodNutrition, number | undefined][]).forEach(([key, value]) => {
+      if (typeof value !== 'number') return;
+      acc[key] = round1(((acc[key] as number | undefined) ?? 0) + value) as never;
+    });
+    acc.kcal = Math.round(acc.kcal);
+    acc.sodium = Math.round(acc.sodium ?? 0);
+    return acc;
+  }, { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 } as FoodNutrition);
 }
 
 // ─── Progress percentage ──────────────────────────────────────────────────────

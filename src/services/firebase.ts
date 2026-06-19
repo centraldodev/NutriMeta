@@ -67,9 +67,11 @@ export const COLLECTIONS = {
   users:      'users',
   profiles:   'profiles',
   dailyLogs:  'dailyLogs',
+  globalFoods:'globalFoods',
   savedMeals: 'savedMeals',
   groups:     'groups',
   groupStats: 'groupStats',
+  communityComments: 'communityComments',
   notifications: 'notifications',
 } as const;
 
@@ -90,6 +92,13 @@ service cloud.firestore {
         && resource.data.userId == request.auth.uid;
       allow create: if request.auth != null
         && request.resource.data.userId == request.auth.uid;
+    }
+
+    // Saved meals: only owner
+    match /globalFoods/{foodId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null;
     }
 
     // Saved meals: only owner
@@ -120,6 +129,15 @@ service cloud.firestore {
       allow read: if request.auth != null
         && request.auth.uid in resource.data.targetUserIds;
       allow write: if false; // Cloud Functions only
+    }
+
+    // Community comments: public inside the group, authored by signed-in users
+    match /communityComments/{commentId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.authorId == request.auth.uid;
+      allow update, delete: if request.auth != null
+        && resource.data.authorId == request.auth.uid;
     }
   }
 }
