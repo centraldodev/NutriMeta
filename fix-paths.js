@@ -17,4 +17,14 @@ html = html.replace(/href="\/_expo\//g, 'href="./_expo/');
 
 fs.writeFileSync(indexPath, html, 'utf-8');
 
+// Copiar fonts.css para dist
+const fontsCssSource = path.join(__dirname, 'public', 'fonts.css');
+const fontsCssDest = path.join(__dirname, 'dist', 'fonts.css');
+
+if (fs.existsSync(fontsCssSource)) {
+  fs.copyFileSync(fontsCssSource, fontsCssDest);
+  console.log('✅ Arquivo fonts.css copiado para dist/');
+}
+
 console.log('✅ Caminhos corrigidos em dist/index.html');
+
