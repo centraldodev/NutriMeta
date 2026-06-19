@@ -20,6 +20,9 @@
         "android.permission.RECORD_AUDIO"
       ]
     },
+    "web": {
+      "bundler": "metro"
+    },
     "extra": {
       "firebaseApiKey": "AIzaSyCEIY0Qd41LwKDeP_XQTPLu57jqcAoo244",
       "firebaseAuthDomain": "nutrimeta-df003.firebaseapp.com",
