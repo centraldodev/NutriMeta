@@ -6,7 +6,13 @@ import {
   initializeAuth,
   Auth,
 } from '@firebase/auth';
-import { getFirestore, Firestore, enableIndexedDbPersistence } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  Firestore,
+} from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
 import { Platform } from 'react-native';
 
@@ -45,18 +51,19 @@ if (Platform.OS === 'web') {
     auth = getAuth(app);
   }
 }
-db = getFirestore(app);
-storage = getStorage(app);
-
 if (Platform.OS === 'web') {
-  enableIndexedDbPersistence(db).catch((err) => {
-    if (err.code === 'failed-precondition') {
-      console.warn('Firestore persistence: multiple tabs open');
-    } else if (err.code === 'unimplemented') {
-      console.warn('Firestore persistence: not supported in this environment');
-    }
-  });
+  try {
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    db = getFirestore(app);
+  }
+} else {
+  db = getFirestore(app);
 }
+
+storage = getStorage(app);
 
 export { app, auth, db, storage };
 

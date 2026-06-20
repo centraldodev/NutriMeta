@@ -4,34 +4,46 @@
     "slug": "nutrimeta",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./public/icone.png",
     "scheme": "nutrimeta",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSSpeechRecognitionUsageDescription": "O NutriMeta usa reconhecimento de voz para adicionar refeições por fala.",
-        "NSMicrophoneUsageDescription": "O NutriMeta usa o microfone para registrar refeições por voz."
+        "NSSpeechRecognitionUsageDescription": "Permita que o NutriMeta reconheça sua fala para registrar refeições.",
+        "NSMicrophoneUsageDescription": "Permita que o NutriMeta use o microfone para registrar refeições por voz."
       }
     },
     "android": {
       "package": "com.n2ilva.nutrimeta",
       "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "foregroundImage": "./public/icone.png",
+        "backgroundColor": "#ffffff"
+      },
       "permissions": [
         "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./public/icone.png"
     },
     "extra": {
       "firebaseApiKey": "AIzaSyCEIY0Qd41LwKDeP_XQTPLu57jqcAoo244",
+      "firebaseWebApiKey": "AIzaSyBXvhktMNz7g7umXF8UINfsIcqNeBQCaIg",
       "firebaseAuthDomain": "nutrimeta-df003.firebaseapp.com",
       "firebaseProjectId": "nutrimeta-df003",
       "firebaseStorageBucket": "nutrimeta-df003.firebasestorage.app",
       "firebaseMessagingSenderId": "273605316772",
       "firebaseAppId": "1:273605316772:android:5e688953c6dc5c1bab5631",
+      "firebaseWebAppId": "1:273605316772:web:c7cf3b15e3e9e905ab5631",
+      "firebaseMeasurementId": "G-H9X0SD76J7",
       "googleWebClientId": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com",
-      "googleAndroidClientId": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com"
+      "googleAndroidClientId": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com",
+      "eas": {
+        "projectId": "876471ea-20d8-47e1-8ef6-03ede7b250dd"
+      }
     },
     "plugins": [
       [
@@ -50,7 +62,16 @@
           "photosPermission": "Permita que o NutriMeta acesse suas fotos para escolher uma imagem de perfil."
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./public/icone.png",
+          "imageWidth": 220,
+          "backgroundColor": "#ffffff"
+        }
+      ]
     ]
   }
 }

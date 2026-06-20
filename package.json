@@ -9,6 +9,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "build:web": "expo export --platform web --output-dir dist && node fix-paths.js",
+    "build:android:preview": "eas build --platform android --profile preview",
+    "credentials:android": "eas credentials --platform android",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -18,8 +20,10 @@
     "expo": "^56.0.12",
     "expo-auth-session": "~56.0.14",
     "expo-constants": "^56.0.18",
+    "expo-font": "~56.0.7",
     "expo-image-picker": "~56.0.18",
     "expo-speech-recognition": "^56.0.1",
+    "expo-splash-screen": "~56.0.10",
     "expo-status-bar": "^56.0.4",
     "expo-web-browser": "~56.0.5",
     "firebase": "^12.15.0",
