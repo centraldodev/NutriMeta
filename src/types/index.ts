@@ -186,6 +186,34 @@ export interface GroupNotification {
   read: boolean;
 }
 
+export type NutritionistLinkStatus = 'pending' | 'accepted' | 'rejected';
+
+export interface NutritionistPatientLink {
+  id: string;
+  nutritionistId: string;
+  nutritionistName: string;
+  nutritionistEmail: string;
+  patientId: string;
+  patientName: string;
+  patientEmail: string;
+  status: NutritionistLinkStatus;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface NutritionistChatMessage {
+  id: string;
+  linkId: string;
+  nutritionistId: string;
+  patientId: string;
+  senderId: string;
+  senderName: string;
+  receiverId: string;
+  text: string;
+  readBy: string[];
+  createdAt: Date;
+}
+
 export interface CommunityComment {
   id: string;
   groupId: string;

@@ -2,7 +2,7 @@ import { getAI, getGenerativeModel, GoogleAIBackend, Schema } from 'firebase/ai'
 
 import { app } from './firebase';
 import { DailyLog, MacroGoals, UserProfile } from '../types';
-import { formatNutritionDetails } from '../utils/nutrition';
+import { formatBrasiliaTime, formatNutritionDetails } from '../utils/nutrition';
 
 export type NutritionInsight = {
   summary: string;
@@ -26,7 +26,7 @@ function logLine(log: DailyLog): string {
     .join(', ');
   const waterTimes = log.entries
     .filter((entry) => (entry.waterMl ?? 0) > 0)
-    .map((entry) => `${entry.waterMl}ml às ${new Date(entry.addedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`)
+    .map((entry) => `${entry.waterMl}ml às ${formatBrasiliaTime(new Date(entry.addedAt))}`)
     .join(', ');
 
   return `${log.date}: ${nutrition}. Alimentos: ${foods || 'sem alimentos'}. Agua total: ${log.waterMl ?? 0}ml. Horarios de agua: ${waterTimes || 'sem horarios registrados'}.`;

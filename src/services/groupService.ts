@@ -30,6 +30,7 @@ import {
 import {
   calcRankingPoints,
   calcGoalProgressPercent,
+  dateDaysAgoBrasilia,
   getCompletedGoals,
   formatDate,
   generateId,
@@ -212,9 +213,7 @@ async function getCurrentStreakDays(userId: string, fallbackGoals: MacroGoals): 
     const byDate = new Map(logs.map((log) => [log.date, log]));
 
     for (let offset = 0; offset < 14; offset += 1) {
-      const date = new Date();
-      date.setDate(date.getDate() - offset);
-      const log = byDate.get(formatDate(date));
+      const log = byDate.get(dateDaysAgoBrasilia(offset));
       if (!log) break;
       if (!isConsistentDay(log.totalNutrition, log.goals ?? fallbackGoals)) break;
       streak += 1;

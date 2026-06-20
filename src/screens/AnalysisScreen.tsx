@@ -16,9 +16,10 @@ import { Colors, MacroColors, Radius, Shadows, Spacing, Typography } from '../co
 import { isFirebaseConfigured } from '../config';
 import { generateNutritionInsights, NutritionInsight } from '../services/analysisAiService';
 import { getRecentDailyLogs } from '../services/nutritionService';
+import { getCachedRecentDailyLogs } from '../services/dailyLogStorage';
 import { useStore, selectGoals } from '../store';
 import { DailyLog, FoodNutrition, MacroGoals } from '../types';
-import { calcGoalProgressPercent, formatDate, macroPercent, sumNutrition } from '../utils/nutrition';
+import { calcGoalProgressPercent, dateDaysAgoBrasilia, formatBrasiliaDate, formatDate, macroPercent, sumNutrition } from '../utils/nutrition';
 import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
 
 const EMPTY_TOTAL: FoodNutrition = { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 };
@@ -34,9 +35,7 @@ const DEFAULT_GOALS: MacroGoals = {
 };
 
 function dateDaysAgo(daysAgo: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() - daysAgo);
-  return formatDate(date);
+  return dateDaysAgoBrasilia(daysAgo);
 }
 
 function getLastNDates(days: number): string[] {
@@ -63,6 +62,13 @@ function mergeTodayLog(logs: DailyLog[], todayLog: DailyLog | null): DailyLog[] 
   return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+function mergeLogLists(primary: DailyLog[], secondary: DailyLog[]): DailyLog[] {
+  const byDate = new Map<string, DailyLog>();
+  secondary.forEach((log) => byDate.set(log.date, log));
+  primary.forEach((log) => byDate.set(log.date, log));
+  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+}
+
 const MICRO_NUTRIENTS: { key: keyof FoodNutrition; label: string; unit: string }[] = [
   { key: 'calcium', label: 'Cálcio', unit: 'mg' },
   { key: 'iron', label: 'Ferro', unit: 'mg' },
@@ -79,7 +85,7 @@ const MICRO_NUTRIENTS: { key: keyof FoodNutrition; label: string; unit: string }
 
 function shortWeekday(dateString: string): string {
   const [year, month, day] = dateString.split('-').map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '');
+  return formatBrasiliaDate(new Date(Date.UTC(year, month - 1, day, 12)), { weekday: 'short' }).replace('.', '');
 }
 
 function StatCard({ label, value, hint }: { label: string; value: string; hint: string }) {
@@ -158,12 +164,19 @@ export function AnalysisScreen() {
     if (!user) return;
     setLoading(true);
     try {
+      const cached = await getCachedRecentDailyLogs(user.id, 31);
+      if (cached.length > 0) setLogs(cached);
+
       if (isFirebaseConfigured && user.id !== 'dev_user') {
         const recent = await getRecentDailyLogs(user.id, 31);
-        setLogs(recent);
+        setLogs(mergeLogLists(recent, cached));
       } else {
-        setLogs(todayLog ? [todayLog] : []);
+        setLogs(mergeLogLists(todayLog ? [todayLog] : [], cached));
       }
+    } catch (error) {
+      console.warn('Failed to load analysis logs', error);
+      const cached = await getCachedRecentDailyLogs(user.id, 31);
+      setLogs(mergeLogLists(todayLog ? [todayLog] : [], cached));
     } finally {
       setLoading(false);
     }

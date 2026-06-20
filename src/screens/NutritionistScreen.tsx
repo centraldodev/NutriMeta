@@ -15,10 +15,13 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
 import { isFirebaseConfigured } from '../config';
 import { signOut } from '../services/authService';
-import { getAllPatientProfiles, getPatientRecentLogs } from '../services/nutritionistService';
+import { getPatientRecentLogs } from '../services/nutritionistService';
+import { getLinkedPatientProfiles, sendNutritionistInvite, subscribeLinkedPatientProfiles, subscribeNutritionistAcceptedLinks } from '../services/nutritionistLinkService';
+import { subscribeUnreadChatCountByLink } from '../services/nutritionistChatService';
+import { NutritionistChatModal } from '../components/NutritionistChatModal';
 import { useStore } from '../store';
-import { DailyLog, MealEntry, UserProfile } from '../types';
-import { formatNutritionDetails } from '../utils/nutrition';
+import { DailyLog, MealEntry, NutritionistPatientLink, UserProfile } from '../types';
+import { formatBrasiliaTime, formatNutritionDetails } from '../utils/nutrition';
 
 const PERIOD_LABELS: Record<MealEntry['mealPeriod'], string> = {
   breakfast: 'Café da manhã',
@@ -34,40 +37,80 @@ function pct(value: number, goal?: number) {
 }
 
 export function NutritionistScreen() {
+  const user = useStore((s) => s.user);
   const clearAuth = useStore((s) => s.clearAuth);
   const [patients, setPatients] = useState<UserProfile[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const [logs, setLogs] = useState<DailyLog[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
   const [loadingPatients, setLoadingPatients] = useState(false);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [acceptedLinks, setAcceptedLinks] = useState<NutritionistPatientLink[]>([]);
+  const [unreadChatCounts, setUnreadChatCounts] = useState<Record<string, number>>({});
+  const [chatLink, setChatLink] = useState<NutritionistPatientLink | null>(null);
 
   const selectedPatient = patients.find((patient) => patient.userId === selectedPatientId) ?? null;
   const selectedLog = logs.find((log) => log.date === selectedDate) ?? logs[0] ?? null;
+  const selectedPatientLink = acceptedLinks.find((link) => link.patientId === selectedPatientId) ?? null;
+
+  async function loadPatients() {
+    if (!isFirebaseConfigured || !user) return;
+    setLoadingPatients(true);
+    try {
+      const loaded = await getLinkedPatientProfiles(user.id);
+      setPatients(loaded);
+      setSelectedPatientId((current) => {
+        if (current && loaded.some((patient) => patient.userId === current)) return current;
+        return loaded[0]?.userId ?? null;
+      });
+    } catch (error) {
+      console.warn('Failed to load nutritionist patients', error);
+      Alert.alert('Erro', 'Não foi possível carregar os pacientes agora.');
+    } finally {
+      setLoadingPatients(false);
+    }
+  }
 
   useEffect(() => {
-    let active = true;
-    async function loadPatients() {
-      if (!isFirebaseConfigured) return;
-      setLoadingPatients(true);
-      try {
-        const loaded = await getAllPatientProfiles();
-        if (!active) return;
+    if (!isFirebaseConfigured || !user) return undefined;
+    setLoadingPatients(true);
+    const unsubscribe = subscribeLinkedPatientProfiles(
+      user.id,
+      (loaded) => {
         setPatients(loaded);
-        setSelectedPatientId((current) => current ?? loaded[0]?.userId ?? null);
-      } catch (error) {
+        setSelectedPatientId((current) => {
+          if (current && loaded.some((patient) => patient.userId === current)) return current;
+          return loaded[0]?.userId ?? null;
+        });
+        setLoadingPatients(false);
+      },
+      (error) => {
         console.warn('Failed to load nutritionist patients', error);
         Alert.alert('Erro', 'Não foi possível carregar os pacientes agora.');
-      } finally {
-        if (active) setLoadingPatients(false);
+        setLoadingPatients(false);
       }
+    );
+    return unsubscribe;
+  }, [user]);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured || !user) {
+      setAcceptedLinks([]);
+      return undefined;
     }
-    loadPatients();
-    return () => {
-      active = false;
-    };
-  }, []);
+    return subscribeNutritionistAcceptedLinks(user.id, setAcceptedLinks);
+  }, [user]);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured || !user) {
+      setUnreadChatCounts({});
+      return undefined;
+    }
+    return subscribeUnreadChatCountByLink(user.id, setUnreadChatCounts);
+  }, [user]);
 
   useEffect(() => {
     let active = true;
@@ -114,6 +157,35 @@ export function NutritionistScreen() {
     clearAuth();
   }
 
+  async function handleSendInvite() {
+    if (!user || !inviteEmail.trim()) return;
+    setInviteLoading(true);
+    try {
+      await sendNutritionistInvite({
+        nutritionistId: user.id,
+        nutritionistName: user.name,
+        nutritionistEmail: user.email,
+        patientEmail: inviteEmail,
+      });
+      setInviteEmail('');
+      Alert.alert('Solicitação enviada', 'O paciente receberá o convite nas notificações da página inicial.');
+      await loadPatients();
+    } catch (error: any) {
+      const message = error?.message === 'patient_not_found'
+        ? 'Não encontramos um paciente cadastrado com esse e-mail.'
+        : error?.message === 'patient_is_nutritionist'
+          ? 'Esse e-mail pertence a uma conta de nutricionista.'
+          : error?.message === 'self_invite'
+            ? 'Você não pode enviar convite para sua própria conta.'
+            : error?.message === 'already_accepted'
+              ? 'Esse paciente já aceitou seu acesso.'
+              : 'Não foi possível enviar a solicitação agora.';
+      Alert.alert('Convite não enviado', message);
+    } finally {
+      setInviteLoading(false);
+    }
+  }
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
@@ -138,6 +210,29 @@ export function NutritionistScreen() {
         ) : (
           <>
             <View style={styles.panel}>
+              <Text style={styles.sectionTitle}>Enviar solicitação</Text>
+              <Text style={styles.mutedText}>Informe o e-mail do paciente. Ele precisa aceitar o acesso nas notificações da página inicial.</Text>
+              <View style={styles.inviteRow}>
+                <TextInput
+                  style={styles.inviteInput}
+                  value={inviteEmail}
+                  onChangeText={setInviteEmail}
+                  placeholder="email@paciente.com"
+                  placeholderTextColor={Colors.gray400}
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                />
+                <TouchableOpacity
+                  style={[styles.inviteBtn, (!inviteEmail.trim() || inviteLoading) && styles.btnDisabled]}
+                  onPress={handleSendInvite}
+                  disabled={!inviteEmail.trim() || inviteLoading}
+                >
+                  {inviteLoading ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.inviteBtnText}>Enviar</Text>}
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.panel}>
               <Text style={styles.sectionTitle}>Pacientes</Text>
               <View style={styles.searchRow}>
                 <MaterialIcons name="search" size={18} color={Colors.gray400} />
@@ -152,18 +247,27 @@ export function NutritionistScreen() {
               {loadingPatients ? (
                 <ActivityIndicator color={Colors.green400} />
               ) : filteredPatients.length === 0 ? (
-                <Text style={styles.mutedText}>Nenhum paciente encontrado.</Text>
+                <Text style={styles.mutedText}>Nenhum paciente vinculado ainda. Envie uma solicitação e aguarde o aceite.</Text>
               ) : (
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.patientRow}>
                   {filteredPatients.map((patient) => {
                     const active = patient.userId === selectedPatientId;
+                    const patientLink = acceptedLinks.find((link) => link.patientId === patient.userId);
+                    const unread = patientLink ? unreadChatCounts[patientLink.id] ?? 0 : 0;
                     return (
                       <TouchableOpacity
                         key={patient.userId}
                         style={[styles.patientCard, active && styles.patientCardActive]}
                         onPress={() => setSelectedPatientId(patient.userId)}
                       >
-                        <Text style={[styles.patientName, active && styles.patientNameActive]}>{patient.name}</Text>
+                        <View style={styles.patientNameRow}>
+                          <Text style={[styles.patientName, active && styles.patientNameActive]}>{patient.name}</Text>
+                          {unread > 0 ? (
+                            <View style={styles.patientUnreadBadge}>
+                              <Text style={styles.patientUnreadText}>{unread}</Text>
+                            </View>
+                          ) : null}
+                        </View>
                         <Text style={styles.patientMeta}>{patient.age} anos · {patient.weight}kg</Text>
                       </TouchableOpacity>
                     );
@@ -174,7 +278,17 @@ export function NutritionistScreen() {
 
             {selectedPatient ? (
               <View style={styles.panel}>
-                <Text style={styles.sectionTitle}>Resumo do paciente</Text>
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionTitleNoMargin}>Resumo do paciente</Text>
+                  {selectedPatientLink ? (
+                    <TouchableOpacity style={styles.chatBtn} onPress={() => setChatLink(selectedPatientLink)}>
+                      <MaterialIcons name="chat" size={17} color={Colors.green600} />
+                      <Text style={styles.chatBtnText}>
+                        Chat{(unreadChatCounts[selectedPatientLink.id] ?? 0) > 0 ? ` (${unreadChatCounts[selectedPatientLink.id]})` : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
                 <View style={styles.summaryGrid}>
                   <InfoCard label="Objetivo" value={goalLabel(selectedPatient.goal)} />
                   <InfoCard label="Altura" value={`${selectedPatient.height} cm`} />
@@ -239,7 +353,7 @@ export function NutritionistScreen() {
                             <View style={styles.entryBody}>
                               <Text style={styles.entryName}>{entry.foodName}</Text>
                               <Text style={styles.entryMeta}>
-                                {new Date(entry.addedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                                {formatBrasiliaTime(new Date(entry.addedAt))}
                                 {' · '}
                                 {formatNutritionDetails(entry.nutrition, { includeKcal: true })}
                               </Text>
@@ -255,6 +369,13 @@ export function NutritionistScreen() {
           </>
         )}
       </ScrollView>
+      <NutritionistChatModal
+        visible={Boolean(chatLink)}
+        link={chatLink}
+        currentUserId={user?.id}
+        currentUserName={user?.name ?? 'Nutricionista'}
+        onClose={() => setChatLink(null)}
+      />
     </SafeAreaView>
   );
 }
@@ -319,13 +440,25 @@ const styles = StyleSheet.create({
   scroll: { width: '100%', maxWidth: Platform.OS === 'web' ? 900 : undefined, alignSelf: 'center', padding: Spacing.base, paddingBottom: Spacing.xxl },
   panel: { backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.lg, padding: Spacing.base, marginBottom: Spacing.sm, ...Shadows.sm },
   sectionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, color: Colors.gray800, marginBottom: Spacing.sm },
+  sectionTitleNoMargin: { fontSize: Typography.base, fontWeight: Typography.bold, color: Colors.gray800 },
+  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm, marginBottom: Spacing.sm },
+  chatBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.green50, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, paddingVertical: 7 },
+  chatBtnText: { fontSize: Typography.xs, color: Colors.green600, fontWeight: Typography.bold },
+  inviteRow: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
+  inviteInput: { flex: 1, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing.md, minHeight: 44, fontSize: Typography.sm, color: Colors.gray800 },
+  inviteBtn: { minWidth: 92, minHeight: 44, borderRadius: Radius.md, backgroundColor: Colors.green400, alignItems: 'center', justifyContent: 'center', paddingHorizontal: Spacing.md },
+  inviteBtnText: { color: Colors.white, fontSize: Typography.sm, fontWeight: Typography.bold },
+  btnDisabled: { opacity: 0.6 },
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, marginBottom: Spacing.sm },
   searchInput: { flex: 1, minHeight: 40, fontSize: Typography.sm, color: Colors.gray800 },
   patientRow: { gap: Spacing.sm },
   patientCard: { width: 180, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, padding: Spacing.sm, backgroundColor: Colors.gray50 },
   patientCardActive: { borderColor: Colors.green400, backgroundColor: Colors.green50 },
+  patientNameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
   patientName: { fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.bold },
   patientNameActive: { color: Colors.green600 },
+  patientUnreadBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: Colors.green400, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  patientUnreadText: { fontSize: Typography.xs, color: Colors.white, fontWeight: Typography.bold },
   patientMeta: { marginTop: 3, fontSize: Typography.xs, color: Colors.gray400 },
   summaryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   infoCard: { flex: 1, minWidth: 130, backgroundColor: Colors.gray50, borderRadius: Radius.md, padding: Spacing.sm },

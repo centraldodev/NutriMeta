@@ -29,7 +29,7 @@ import {
 import { addMealEntry } from '../services/nutritionService';
 import { getCustomFoods, saveCustomFood } from '../services/customFoodService';
 import { useStore, selectGoals } from '../store';
-import { formatNutritionDetails, generateId, getInitials, sumNutrition } from '../utils/nutrition';
+import { formatBrasiliaDate, formatNutritionDetails, generateId, getInitials, sumNutrition } from '../utils/nutrition';
 import { CommunityComment, CommunityPost, FoodItem, MealEntry, MealPeriod } from '../types';
 
 const GLOBAL_COMMUNITY_ID = 'global';
@@ -52,7 +52,7 @@ function timeAgo(date: Date): string {
   if (diffMin < 60) return `${diffMin} min`;
   const diffHour = Math.round(diffMin / 60);
   if (diffHour < 24) return `${diffHour} h`;
-  return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  return formatBrasiliaDate(date, { day: '2-digit', month: '2-digit' });
 }
 
 function PostCard({
@@ -75,6 +75,7 @@ function PostCard({
   onToggleFollow: () => void;
 }) {
   const nutrition = formatNutritionDetails(post.nutrition, { includeKcal: true });
+  const foodNames = post.foodNames.filter(Boolean).join(', ');
 
   return (
     <View style={styles.postCard}>
@@ -107,8 +108,8 @@ function PostCard({
 
       <View style={styles.postBody}>
         {post.caption ? <Text style={styles.caption}>{post.caption}</Text> : null}
-        <Text style={styles.foodNames}>{post.foodNames.join(', ')}</Text>
-        {nutrition ? <Text style={styles.nutritionText}>{nutrition}</Text> : null}
+        {foodNames ? <Text style={styles.foodNames}>{foodNames}</Text> : null}
+        {foodNames && nutrition ? <Text style={styles.nutritionText}>{nutrition}</Text> : null}
       </View>
 
       <View style={styles.commentBlock}>
@@ -256,14 +257,19 @@ export function RankingScreen({
   }
 
   async function handlePhotoConfirm(items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; summary: string; caption: string }) {
-    if (!user || !goals) {
+    if (!user) {
       Alert.alert('Perfil não carregado', 'Aguarde o app carregar seus dados e tente novamente.');
       return;
     }
 
     const validItems = items.filter((item) => item.food);
-    if (validItems.length === 0) {
-      Alert.alert('Nenhum alimento válido', 'Revise os itens detectados antes de publicar.');
+    if (validItems.length === 0 && !photo) {
+      Alert.alert('Foto necessária', 'Escolha uma foto e adicione uma descrição para publicar na comunidade.');
+      return;
+    }
+
+    if (validItems.length > 0 && !goals) {
+      Alert.alert('Perfil não carregado', 'Aguarde o app carregar suas metas para salvar a refeição.');
       return;
     }
 
@@ -282,7 +288,7 @@ export function RankingScreen({
 
       let entry: MealEntry;
       try {
-        entry = isFirebaseConfigured && user.id !== 'dev_user'
+        entry = isFirebaseConfigured && user.id !== 'dev_user' && goals
           ? await addMealEntry(user.id, goals, payload)
           : { ...payload, id: generateId(), userId: user.id, addedAt: new Date() };
       } catch (error) {
@@ -415,6 +421,7 @@ export function RankingScreen({
         onClose={() => setPhotoModal(false)}
         onConfirm={handlePhotoConfirm}
         customFoods={customFoods}
+        allowPhotoOnlyPost
       />
     </SafeAreaView>
   );

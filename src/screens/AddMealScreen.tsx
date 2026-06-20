@@ -19,7 +19,7 @@ import {
   UNIT_LABELS,
 } from '../constants/foodDatabase';
 import { FoodItem, FoodNutrition, MealEntry, MealPeriod, QuantityUnit } from '../types';
-import { formatNutritionDetails, generateId, formatDate, sumNutrition } from '../utils/nutrition';
+import { formatBrasiliaTime, formatNutritionDetails, generateId, formatDate, getBrasiliaHour, sumNutrition } from '../utils/nutrition';
 import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
 import { isFirebaseConfigured } from '../config';
 
@@ -188,7 +188,7 @@ const MEAL_PERIOD_LABELS: Record<MealPeriod, string> = {
 };
 
 function getDefaultMealPeriod(date = new Date()): MealPeriod {
-  const hour = date.getHours();
+  const hour = getBrasiliaHour(date);
   if (hour >= 5 && hour < 10) return 'breakfast';
   if (hour >= 11 && hour < 15) return 'lunch';
   if (hour >= 18 && hour < 22) return 'dinner';
@@ -1230,7 +1230,11 @@ export function PhotoModal({
               <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
               <Text style={voiceModal.exTitle}>Itens detectados</Text>
               {editableDrafts.length === 0 ? (
-                <Text style={voiceModal.previewEmpty}>Depois da análise, confira os alimentos aqui e ajuste o que precisar.</Text>
+                <Text style={voiceModal.previewEmpty}>
+                  {allowPhotoOnlyPost
+                    ? 'Se a IA não identificar alimentos, você ainda pode publicar a foto usando a descrição acima.'
+                    : 'Depois da análise, confira os alimentos aqui e ajuste o que precisar.'}
+                </Text>
               ) : (
                 editableDrafts.map((item) => (
                   <View key={item.key} style={voiceModal.editCard}>
@@ -1316,7 +1320,7 @@ export function PhotoModal({
 // ─── Today Log ────────────────────────────────────────────────────────────────
 
 function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete: () => void }) {
-  const time = new Date(entry.addedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const time = formatBrasiliaTime(new Date(entry.addedAt));
   const mealPeriod = getEntryMealPeriod(entry);
   const nutritionDetails = formatNutritionDetails(entry.nutrition);
 

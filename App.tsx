@@ -16,6 +16,7 @@ import { isFirebaseConfigured } from './src/config';
 import { useStore } from './src/store';
 import { getUserAccount, getUserProfile, onAuthChange } from './src/services/authService';
 import { subscribeDailyLog } from './src/services/nutritionService';
+import { getCachedDailyLog, saveCachedDailyLog } from './src/services/dailyLogStorage';
 import { subscribeGroupNotifications } from './src/services/groupService';
 import { calcMacroGoals, formatDate, generateId } from './src/utils/nutrition';
 
@@ -32,7 +33,7 @@ function MainTabs() {
   const [tab, setTab] = useState<MainTab>('home');
   const [waterOpen, setWaterOpen] = useState(false);
   const insets = useSafeAreaInsets();
-  const tabBarBottom = Platform.OS === 'web' ? Spacing.base : insets.bottom + Spacing.sm;
+  const tabBarBottom = Platform.OS === 'web' ? 0 : insets.bottom;
   const waterFabBottom = tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm;
 
   const tabs = useMemo(
@@ -126,6 +127,7 @@ export default function App() {
   const profile = useStore((state) => state.profile);
   const goals = useStore((state) => state.goals);
   const groups = useStore((state) => state.groups);
+  const todayLog = useStore((state) => state.todayLog);
   const setUser = useStore((state) => state.setUser);
   const setProfile = useStore((state) => state.setProfile);
   const setGoals = useStore((state) => state.setGoals);
@@ -169,9 +171,46 @@ export default function App() {
   }, [setGoals, setProfile, setUser]);
 
   useEffect(() => {
-    if (!user || user.id === 'dev_user' || !isFirebaseConfigured) return undefined;
-    return subscribeDailyLog(user.id, formatDate(new Date()), setTodayLog);
+    if (!user) return undefined;
+    const today = formatDate(new Date());
+    let active = true;
+
+    getCachedDailyLog(user.id, today)
+      .then((cachedLog) => {
+        if (active && cachedLog) setTodayLog(cachedLog);
+      })
+      .catch((error) => {
+        console.warn('Failed to load cached daily log', error);
+      });
+
+    if (user.id === 'dev_user' || !isFirebaseConfigured) {
+      return () => {
+        active = false;
+      };
+    }
+
+    const unsubscribe = subscribeDailyLog(user.id, today, (log) => {
+      if (!active) return;
+      if (log) {
+        setTodayLog(log);
+        saveCachedDailyLog(log).catch((error) => {
+          console.warn('Failed to cache Firebase daily log', error);
+        });
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, [setTodayLog, user]);
+
+  useEffect(() => {
+    if (!todayLog) return;
+    saveCachedDailyLog(todayLog).catch((error) => {
+      console.warn('Failed to cache current daily log', error);
+    });
+  }, [todayLog]);
 
   useEffect(() => {
     const group = groups[0];

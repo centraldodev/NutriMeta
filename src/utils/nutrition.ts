@@ -6,6 +6,8 @@ import {
   ActivityLevel,
 } from '../types';
 
+export const BRASILIA_TIME_ZONE = 'America/Sao_Paulo';
+
 // ─── TMB (Taxa Metabólica Basal) — Mifflin-St Jeor ───────────────────────────
 
 export function calcTMB(profile: Pick<UserProfile, 'weight' | 'height' | 'age' | 'sex'>): number {
@@ -189,7 +191,47 @@ function roundToNearest(value: number, step: number): number {
 }
 
 export function formatDate(date: Date): string {
-  return date.toISOString().split('T')[0]; // YYYY-MM-DD
+  const parts = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: BRASILIA_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+export function getBrasiliaHour(date = new Date()): number {
+  const hour = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: BRASILIA_TIME_ZONE,
+    hour: '2-digit',
+    hour12: false,
+  }).format(date);
+  return Number(hour);
+}
+
+export function formatBrasiliaDate(
+  date: Date,
+  options: Intl.DateTimeFormatOptions
+): string {
+  return date.toLocaleDateString('pt-BR', { ...options, timeZone: BRASILIA_TIME_ZONE });
+}
+
+export function formatBrasiliaTime(
+  date: Date,
+  options: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
+): string {
+  return date.toLocaleTimeString('pt-BR', { ...options, timeZone: BRASILIA_TIME_ZONE });
+}
+
+export function addDaysToDateString(dateString: string, days: number): string {
+  const [year, month, day] = dateString.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + days, 12, 0, 0));
+  return formatDate(date);
+}
+
+export function dateDaysAgoBrasilia(daysAgo: number): string {
+  return addDaysToDateString(formatDate(new Date()), -daysAgo);
 }
 
 export function generateId(): string {

@@ -4,7 +4,6 @@ import {
   setDoc,
   updateDoc,
   arrayUnion,
-  arrayRemove,
   collection,
   query,
   where,
@@ -63,9 +62,7 @@ export async function getRecentDailyLogs(
 ): Promise<DailyLog[]> {
   const q = query(
     collection(db, COLLECTIONS.dailyLogs),
-    where('userId', '==', userId),
-    orderBy('date', 'desc'),
-    limit(days)
+    where('userId', '==', userId)
   );
   const snap = await getDocs(q);
   return snap.docs.map((docSnap) => {
@@ -78,7 +75,7 @@ export async function getRecentDailyLogs(
         addedAt: (e.addedAt as unknown as { toDate(): Date })?.toDate?.() ?? new Date(),
       })),
     } as DailyLog;
-  });
+  }).sort((a, b) => b.date.localeCompare(a.date)).slice(0, days);
 }
 
 export function subscribeDailyLog(

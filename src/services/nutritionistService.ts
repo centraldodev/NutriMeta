@@ -1,8 +1,6 @@
 import {
   collection,
   getDocs,
-  limit,
-  orderBy,
   query,
   where,
 } from 'firebase/firestore';
@@ -27,9 +25,7 @@ export async function getAllPatientProfiles(): Promise<UserProfile[]> {
 export async function getPatientRecentLogs(userId: string, days = 14): Promise<DailyLog[]> {
   const q = query(
     collection(db, COLLECTIONS.dailyLogs),
-    where('userId', '==', userId),
-    orderBy('date', 'desc'),
-    limit(days)
+    where('userId', '==', userId)
   );
   const snap = await getDocs(q);
   return snap.docs.map((docSnap) => {
@@ -42,5 +38,5 @@ export async function getPatientRecentLogs(userId: string, days = 14): Promise<D
         addedAt: entry.addedAt?.toDate?.() ?? new Date(),
       })),
     } as DailyLog;
-  });
+  }).sort((a, b) => b.date.localeCompare(a.date)).slice(0, days);
 }

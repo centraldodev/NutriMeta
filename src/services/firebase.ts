@@ -74,6 +74,8 @@ export const COLLECTIONS = {
   communityComments: 'communityComments',
   communityPosts: 'communityPosts',
   communityFollows: 'communityFollows',
+  nutritionistLinks: 'nutritionistLinks',
+  nutritionistMessages: 'nutritionistMessages',
   notifications: 'notifications',
 } as const;
 
@@ -83,11 +85,19 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    match /users/{userId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'nutritionist'
+      );
+      allow create, update: if request.auth != null && request.auth.uid == userId;
+    }
+
     // Users can only read/write their own profile
     match /profiles/{userId} {
       allow read: if request.auth != null && (
         request.auth.uid == userId ||
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'nutritionist'
+        get(/databases/$(database)/documents/nutritionistLinks/$(request.auth.uid + '_' + userId)).data.status == 'accepted'
       );
       allow write: if request.auth != null && request.auth.uid == userId;
     }
@@ -96,7 +106,7 @@ service cloud.firestore {
     match /dailyLogs/{logId} {
       allow read: if request.auth != null && (
         resource.data.userId == request.auth.uid ||
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'nutritionist'
+        get(/databases/$(database)/documents/nutritionistLinks/$(request.auth.uid + '_' + resource.data.userId)).data.status == 'accepted'
       );
       allow write: if request.auth != null
         && resource.data.userId == request.auth.uid;
@@ -144,6 +154,34 @@ service cloud.firestore {
     match /communityFollows/{followId} {
       allow read: if request.auth != null;
       allow create, delete: if request.auth != null;
+    }
+
+    match /nutritionistLinks/{linkId} {
+      allow read: if request.auth != null && (
+        resource.data.nutritionistId == request.auth.uid ||
+        resource.data.patientId == request.auth.uid
+      );
+      allow create: if request.auth != null
+        && request.resource.data.nutritionistId == request.auth.uid
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'nutritionist';
+      allow update: if request.auth != null && (
+        resource.data.nutritionistId == request.auth.uid ||
+        resource.data.patientId == request.auth.uid
+      );
+    }
+
+    match /nutritionistMessages/{messageId} {
+      allow read: if request.auth != null && (
+        resource.data.nutritionistId == request.auth.uid ||
+        resource.data.patientId == request.auth.uid
+      );
+      allow create: if request.auth != null
+        && request.resource.data.senderId == request.auth.uid
+        && get(/databases/$(database)/documents/nutritionistLinks/$(request.resource.data.linkId)).data.status == 'accepted';
+      allow update: if request.auth != null && (
+        resource.data.nutritionistId == request.auth.uid ||
+        resource.data.patientId == request.auth.uid
+      );
     }
 
     // Notifications: members can read; system/cloud functions write

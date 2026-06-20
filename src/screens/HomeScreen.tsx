@@ -22,8 +22,11 @@ import { Colors, Radius, Shadows, Spacing, Typography } from '../constants/theme
 import { isFirebaseConfigured } from '../config';
 import { saveUserProfile, signOut } from '../services/authService';
 import { refineDietGoals } from '../services/goalAiService';
+import { respondNutritionistInvite, subscribePatientAcceptedNutritionistLinks, subscribePatientNutritionistInvites } from '../services/nutritionistLinkService';
+import { subscribeUnreadChatCountByLink } from '../services/nutritionistChatService';
+import { NutritionistChatModal } from '../components/NutritionistChatModal';
 import { useStore, selectGoals, selectNotifications, selectTodayLog, selectUnreadCount } from '../store';
-import { calcMacroGoals, formatKcal, formatGrams, macroPercent } from '../utils/nutrition';
+import { calcMacroGoals, formatBrasiliaDate, formatKcal, formatGrams, getBrasiliaHour, macroPercent } from '../utils/nutrition';
 import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
 import {
   buildValidatedProfileValues,
@@ -36,7 +39,7 @@ import {
   parseProfileNumber,
   validateProfileBasics,
 } from '../utils/profileValidation';
-import { ActivityLevel, BiologicalSex, FoodNutrition, GoalType, MacroGoals, UserProfile } from '../types';
+import { ActivityLevel, BiologicalSex, FoodNutrition, GoalType, MacroGoals, NutritionistPatientLink, UserProfile } from '../types';
 
 const RING_SIZE = 160;
 const RING_STROKE = 14;
@@ -597,8 +600,25 @@ function HelpModal({ visible, onClose }: { visible: boolean; onClose: () => void
   );
 }
 
-function NotificationsModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+function NotificationsModal({
+  visible,
+  onClose,
+  nutritionistInvites,
+  onRespondInvite,
+  chatLinks,
+  unreadChatCounts,
+  onOpenChat,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  nutritionistInvites: NutritionistPatientLink[];
+  onRespondInvite: (linkId: string, status: 'accepted' | 'rejected') => void;
+  chatLinks: NutritionistPatientLink[];
+  unreadChatCounts: Record<string, number>;
+  onOpenChat: (link: NutritionistPatientLink) => void;
+}) {
   const notifications = useStore(selectNotifications);
+  const hasItems = notifications.length > 0 || nutritionistInvites.length > 0 || chatLinks.length > 0;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -613,18 +633,49 @@ function NotificationsModal({ visible, onClose }: { visible: boolean; onClose: (
             </TouchableOpacity>
           </View>
           <ScrollView contentContainerStyle={modalStyles.scroll}>
-            {notifications.length === 0 ? (
+            {!hasItems ? (
               <View style={modalStyles.emptyNotice}>
                 <MaterialIcons name="notifications-none" size={34} color={Colors.gray400} />
                 <Text style={modalStyles.emptyNoticeText}>Feedbacks e dicas aparecerão aqui.</Text>
               </View>
             ) : (
-              notifications.map((item) => (
-                <View key={item.id} style={modalStyles.noticeCard}>
-                  <Text style={modalStyles.noticeTitle}>{item.userName || 'NutriMeta'}</Text>
-                  <Text style={modalStyles.noticeText}>{item.message}</Text>
-                </View>
-              ))
+              <>
+                {nutritionistInvites.map((invite) => (
+                  <View key={invite.id} style={modalStyles.noticeCard}>
+                    <Text style={modalStyles.noticeTitle}>Solicitação de nutricionista</Text>
+                    <Text style={modalStyles.noticeText}>
+                      {invite.nutritionistName} quer acessar seus registros nutricionais para acompanhamento.
+                    </Text>
+                    <Text style={modalStyles.noticeMeta}>{invite.nutritionistEmail}</Text>
+                    <View style={modalStyles.noticeActions}>
+                      <TouchableOpacity style={modalStyles.noticeRejectBtn} onPress={() => onRespondInvite(invite.id, 'rejected')}>
+                        <Text style={modalStyles.noticeRejectText}>Recusar</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={modalStyles.noticeAcceptBtn} onPress={() => onRespondInvite(invite.id, 'accepted')}>
+                        <Text style={modalStyles.noticeAcceptText}>Aceitar</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+                {chatLinks.map((link) => {
+                  const unread = unreadChatCounts[link.id] ?? 0;
+                  return (
+                    <TouchableOpacity key={link.id} style={modalStyles.noticeCard} onPress={() => onOpenChat(link)}>
+                      <Text style={modalStyles.noticeTitle}>Chat com nutricionista</Text>
+                      <Text style={modalStyles.noticeText}>{link.nutritionistName}</Text>
+                      <Text style={modalStyles.noticeMeta}>
+                        {unread > 0 ? `${unread} mensagem(ns) nova(s)` : 'Toque para abrir a conversa'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+                {notifications.map((item) => (
+                  <View key={item.id} style={modalStyles.noticeCard}>
+                    <Text style={modalStyles.noticeTitle}>{item.userName || 'NutriMeta'}</Text>
+                    <Text style={modalStyles.noticeText}>{item.message}</Text>
+                  </View>
+                ))}
+              </>
             )}
           </ScrollView>
         </View>
@@ -695,6 +746,10 @@ export function HomeScreen({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [nutritionistInvites, setNutritionistInvites] = useState<NutritionistPatientLink[]>([]);
+  const [chatLinks, setChatLinks] = useState<NutritionistPatientLink[]>([]);
+  const [unreadChatCounts, setUnreadChatCounts] = useState<Record<string, number>>({});
+  const [chatLink, setChatLink] = useState<NutritionistPatientLink | null>(null);
 
   const totals: FoodNutrition = useMemo(
     () => todayLog?.totalNutrition ?? { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
@@ -724,13 +779,51 @@ export function HomeScreen({
     { key: 'folate', label: 'Folato', unit: 'mcg', goal: 400, mode: 'target', section: 'Vitaminas e minerais' },
   ], [safeGoals]);
   const waterMl = todayLog?.waterMl ?? 0;
+
+  useEffect(() => {
+    if (!user || user.id === 'dev_user' || !isFirebaseConfigured) {
+      setNutritionistInvites([]);
+      return undefined;
+    }
+    return subscribePatientNutritionistInvites(user.id, setNutritionistInvites);
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || user.id === 'dev_user' || !isFirebaseConfigured) {
+      setChatLinks([]);
+      return undefined;
+    }
+    return subscribePatientAcceptedNutritionistLinks(user.id, setChatLinks);
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || user.id === 'dev_user' || !isFirebaseConfigured) {
+      setUnreadChatCounts({});
+      return undefined;
+    }
+    return subscribeUnreadChatCountByLink(user.id, setUnreadChatCounts);
+  }, [user]);
+
+  async function handleRespondNutritionistInvite(linkId: string, status: 'accepted' | 'rejected') {
+    try {
+      await respondNutritionistInvite(linkId, status);
+      setNutritionistInvites((items) => items.filter((item) => item.id !== linkId));
+      Alert.alert(status === 'accepted' ? 'Acesso aceito' : 'Solicitação recusada',
+        status === 'accepted'
+          ? 'Seu nutricionista agora pode acompanhar seus registros.'
+          : 'O nutricionista não terá acesso aos seus registros.');
+    } catch (error) {
+      console.warn('Failed to respond nutritionist invite', error);
+      Alert.alert('Erro', 'Não foi possível responder essa solicitação agora.');
+    }
+  }
   const kcalPct = macroPercent(totals.kcal, safeGoals.kcal);
-  const hour = new Date().getHours();
+  const hour = getBrasiliaHour();
   const greeting = hour < 12 ? 'Bom dia' : hour < 18 ? 'Boa tarde' : 'Boa noite';
   const firstName = (profile?.name ?? user?.name ?? 'Usuário').split(' ')[0];
   const initials = (profile?.name ?? user?.name ?? 'U').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
 
-  const today = new Date().toLocaleDateString('pt-BR', {
+  const today = formatBrasiliaDate(new Date(), {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
@@ -771,7 +864,7 @@ export function HomeScreen({
         <View style={styles.headerActions}>
           <TouchableOpacity style={styles.helpButton} onPress={() => setNotificationsOpen(true)}>
             <MaterialIcons name="notifications-none" size={21} color={Colors.green600} />
-            {unreadCount > 0 && <View style={styles.notificationDot} />}
+            {unreadCount + nutritionistInvites.length + Object.values(unreadChatCounts).reduce((sum, count) => sum + count, 0) > 0 && <View style={styles.notificationDot} />}
           </TouchableOpacity>
           <TouchableOpacity style={styles.helpButton} onPress={() => setHelpOpen(true)}>
             <MaterialIcons name="help-outline" size={21} color={Colors.green600} />
@@ -821,7 +914,25 @@ export function HomeScreen({
 
       <SettingsModal visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <HelpModal visible={helpOpen} onClose={() => setHelpOpen(false)} />
-      <NotificationsModal visible={notificationsOpen} onClose={() => setNotificationsOpen(false)} />
+      <NotificationsModal
+        visible={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
+        nutritionistInvites={nutritionistInvites}
+        onRespondInvite={handleRespondNutritionistInvite}
+        chatLinks={chatLinks}
+        unreadChatCounts={unreadChatCounts}
+        onOpenChat={(link) => {
+          setChatLink(link);
+          setNotificationsOpen(false);
+        }}
+      />
+      <NutritionistChatModal
+        visible={Boolean(chatLink)}
+        link={chatLink}
+        currentUserId={user?.id}
+        currentUserName={profile?.name ?? user?.name ?? 'Paciente'}
+        onClose={() => setChatLink(null)}
+      />
       <WaterModal visible={waterOpen} onClose={onWaterClose} onAdd={onAddWater} />
     </SafeAreaView>
   );
@@ -1052,6 +1163,12 @@ const modalStyles = StyleSheet.create({
   noticeCard: { backgroundColor: Colors.gray50, borderRadius: Radius.md, padding: Spacing.md, marginBottom: Spacing.sm },
   noticeTitle: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray800, marginBottom: 4 },
   noticeText: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 19 },
+  noticeMeta: { marginTop: 4, fontSize: Typography.xs, color: Colors.gray400 },
+  noticeActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.sm, marginTop: Spacing.md },
+  noticeRejectBtn: { borderWidth: 1, borderColor: Colors.borderMd, borderRadius: Radius.full, paddingHorizontal: Spacing.md, paddingVertical: 8 },
+  noticeRejectText: { fontSize: Typography.sm, color: Colors.gray600, fontWeight: Typography.bold },
+  noticeAcceptBtn: { backgroundColor: Colors.green400, borderRadius: Radius.full, paddingHorizontal: Spacing.md, paddingVertical: 8 },
+  noticeAcceptText: { fontSize: Typography.sm, color: Colors.white, fontWeight: Typography.bold },
 });
 
 const waterStyles = StyleSheet.create({
