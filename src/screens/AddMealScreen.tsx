@@ -341,6 +341,18 @@ function createLocalEntry(userId: string, payload: MealEntryPayload): MealEntry 
   };
 }
 
+function firebaseErrorMessage(error: unknown): string {
+  const err = error as { code?: string; message?: string };
+  if (err?.code === 'permission-denied') {
+    return 'O Firebase recusou a gravação por regra de permissão. Confira as Firestore Rules do projeto.';
+  }
+  if (err?.code === 'unavailable' || err?.code === 'deadline-exceeded') {
+    return 'O Firebase não respondeu agora. Verifique a conexão e tente novamente.';
+  }
+  if (err?.code) return `Erro do Firebase: ${err.code}.`;
+  return err?.message ? `Erro: ${err.message}` : 'Erro desconhecido ao sincronizar com o Firebase.';
+}
+
 function recalcMealDraft(item: MealDraft, changes: Partial<MealDraft>): MealDraft {
   const next = { ...item, ...changes };
   if (!next.food) {
@@ -486,7 +498,7 @@ function AddMealModal({
         entry = createLocalEntry(user.id, payload);
         Alert.alert(
           'Salvo neste aparelho',
-          'Não consegui sincronizar com o Firebase agora, mas registrei o alimento localmente.'
+          `Não consegui sincronizar com o Firebase agora, mas registrei o alimento localmente.\n\n${firebaseErrorMessage(error)}`
         );
       }
       addEntry(entry);
@@ -529,117 +541,137 @@ function AddMealModal({
             </TouchableOpacity>
           </View>
 
-          <View style={modal.searchPanel}>
-            <Text style={modal.label}>Alimento</Text>
-            <TextInput
-              style={modal.input}
-              value={foodQuery}
-              onChangeText={handleFoodQuery}
-              placeholder="Busque: arroz, file frango, brocoli..."
-              placeholderTextColor={Colors.gray400}
-              autoFocus
-            />
-            <Text style={modal.subLabel}>
-              {todayLog?.entries.length || savedMeals.length ? 'Mais usados por você' : 'Atalhos populares'}
-            </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={modal.chipsScroll}>
-              <View style={modal.chips}>
-                {frequentFoods.map((food) => (
-                  <TouchableOpacity key={food.id} style={modal.chip} onPress={() => handleSelectFood(food)}>
-                    <Text style={modal.chipText}>{food.emoji} {food.name.replace(/ cozido\/mexido| cozido| grelhado/g, '')}</Text>
+          <ScrollView
+            style={modal.body}
+            contentContainerStyle={modal.bodyContent}
+            showsVerticalScrollIndicator
+            nestedScrollEnabled
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={modal.searchPanel}>
+              <Text style={modal.label}>Alimento</Text>
+              <TextInput
+                style={modal.input}
+                value={foodQuery}
+                onChangeText={handleFoodQuery}
+                placeholder="Busque: arroz, file frango, brocoli..."
+                placeholderTextColor={Colors.gray400}
+                autoFocus
+              />
+              <Text style={modal.subLabel}>
+                {todayLog?.entries.length || savedMeals.length ? 'Mais usados por você' : 'Atalhos populares'}
+              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={modal.chipsScroll}>
+                <View style={modal.chips}>
+                  {frequentFoods.map((food) => (
+                    <TouchableOpacity key={food.id} style={modal.chip} onPress={() => handleSelectFood(food)}>
+                      <Text style={modal.chipText}>{food.emoji} {food.name.replace(/ cozido\/mexido| cozido| grelhado/g, '')}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </ScrollView>
+            </View>
+
+            <View style={modal.suggestionBox}>
+              <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
+                {suggestions.map((food) => {
+                  const selected = foodItem?.id === food.id;
+                  return (
+                    <TouchableOpacity
+                      key={food.id}
+                      style={[modal.foodOption, selected && modal.foodOptionActive]}
+                      onPress={() => handleSelectFood(food)}
+                    >
+                      <Text style={modal.foodEmoji}>{food.emoji}</Text>
+                      <View style={modal.foodInfo}>
+                        <Text style={[modal.foodName, selected && modal.foodNameActive]}>{food.name}</Text>
+                        <Text style={modal.foodUnit}>Padrão: {UNIT_LABELS[food.defaultUnit]}</Text>
+                      </View>
+                      {selected && <MaterialIcons name="check-circle" size={20} color={Colors.green600} />}
+                    </TouchableOpacity>
+                  );
+                })}
+                {suggestions.length === 0 && !isEmpty && (
+                  <TouchableOpacity style={modal.aiCreateOption} onPress={handleAdd} disabled={saving}>
+                    <View style={modal.aiIcon}>
+                      {saving ? <ActivityIndicator color={Colors.green600} /> : <MaterialIcons name="auto-awesome" size={20} color={Colors.green600} />}
+                    </View>
+                    <View style={modal.foodInfo}>
+                      <Text style={modal.aiCreateTitle}>Cadastrar "{foodQuery.trim()}" com IA</Text>
+                      <Text style={modal.aiCreateText}>Vou buscar referências públicas de rótulo/tabela e salvar na base.</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+                {suggestions.length === 0 && isEmpty && (
+                  <View style={modal.noResults}>
+                    <Text style={modal.noResultsText}>Digite um alimento para buscar ou cadastrar com IA.</Text>
+                  </View>
+                )}
+              </ScrollView>
+            </View>
+
+            <View style={modal.bottomPanel}>
+              <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
+
+              <View style={modal.qtyRow}>
+                <View style={modal.qtyField}>
+                  <Text style={modal.label}>Quantidade</Text>
+                  <TextInput
+                    style={modal.input}
+                    value={quantity}
+                    onChangeText={setQuantity}
+                    keyboardType="decimal-pad"
+                    placeholder="1"
+                    placeholderTextColor={Colors.gray400}
+                  />
+                </View>
+                <View style={modal.qtyHintBox}>
+                  <Text style={modal.qtyHintTitle}>Dica</Text>
+                  <Text style={modal.qtyHint}>Use gramas para maior precisão quando souber o peso.</Text>
+                </View>
+              </View>
+
+              <Text style={modal.label}>Unidade</Text>
+              <View style={modal.unitWrap}>
+                {availableUnits.map((u) => (
+                  <TouchableOpacity
+                    key={u}
+                    style={[modal.unitChip, unit === u && modal.unitChipActive]}
+                    onPress={() => setUnit(u)}
+                  >
+                    <Text style={[modal.unitChipText, unit === u && modal.unitChipTextActive]}>{UNIT_LABELS[u]}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
-            </ScrollView>
-          </View>
 
-          <View style={modal.suggestionBox}>
-            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
-              {suggestions.map((food) => {
-                const selected = foodItem?.id === food.id;
-                return (
-                  <TouchableOpacity
-                    key={food.id}
-                    style={[modal.foodOption, selected && modal.foodOptionActive]}
-                    onPress={() => handleSelectFood(food)}
-                  >
-                    <Text style={modal.foodEmoji}>{food.emoji}</Text>
-                    <View style={modal.foodInfo}>
-                      <Text style={[modal.foodName, selected && modal.foodNameActive]}>{food.name}</Text>
-                      <Text style={modal.foodUnit}>Padrão: {UNIT_LABELS[food.defaultUnit]}</Text>
-                    </View>
-                    {selected && <MaterialIcons name="check-circle" size={20} color={Colors.green600} />}
-                  </TouchableOpacity>
-                );
-              })}
-              {suggestions.length === 0 && (
-                <View style={modal.noResults}>
-                  <Text style={modal.noResultsText}>Nenhum alimento encontrado.</Text>
+              {estimated && (
+                <View style={modal.estimateBox}>
+                  <Text style={modal.estimateTitle}>Estimativa nutricional</Text>
+                  <View style={modal.estimateGrid}>
+                    <EstVal label="kcal"  val={String(estimated.kcal)} />
+                    <EstVal label="Prot"  val={`${estimated.protein}g`} color={Colors.protein} />
+                    <EstVal label="Carb"  val={`${estimated.carbs}g`}   color={Colors.carbs}   />
+                    <EstVal label="Gord"  val={`${estimated.fat}g`}     color={Colors.fat}     />
+                    <EstVal label="Fibra" val={`${estimated.fiber}g`}   color={Colors.fiber}   />
+                  </View>
                 </View>
               )}
-            </ScrollView>
-          </View>
 
-            <View style={modal.bottomPanel}>
-            <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
-
-            <View style={modal.qtyRow}>
-              <View style={modal.qtyField}>
-                <Text style={modal.label}>Quantidade</Text>
-                <TextInput
-                  style={modal.input}
-                  value={quantity}
-                  onChangeText={setQuantity}
-                  keyboardType="decimal-pad"
-                  placeholder="1"
-                  placeholderTextColor={Colors.gray400}
-                />
-              </View>
-              <View style={modal.qtyHintBox}>
-                <Text style={modal.qtyHintTitle}>Dica</Text>
-                <Text style={modal.qtyHint}>Use gramas para maior precisão quando souber o peso.</Text>
-              </View>
-            </View>
-
-            <Text style={modal.label}>Unidade</Text>
-            <View style={modal.unitWrap}>
-              {availableUnits.map((u) => (
-                <TouchableOpacity
-                  key={u}
-                  style={[modal.unitChip, unit === u && modal.unitChipActive]}
-                  onPress={() => setUnit(u)}
-                >
-                  <Text style={[modal.unitChipText, unit === u && modal.unitChipTextActive]}>{UNIT_LABELS[u]}</Text>
+              <View style={modal.actions}>
+                <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
+                  <Text style={modal.btnCancelText}>Fechar</Text>
                 </TouchableOpacity>
-              ))}
-            </View>
-
-            {estimated && (
-              <View style={modal.estimateBox}>
-                <Text style={modal.estimateTitle}>Estimativa nutricional</Text>
-                <View style={modal.estimateGrid}>
-                  <EstVal label="kcal"  val={String(estimated.kcal)} />
-                  <EstVal label="Prot"  val={`${estimated.protein}g`} color={Colors.protein} />
-                  <EstVal label="Carb"  val={`${estimated.carbs}g`}   color={Colors.carbs}   />
-                  <EstVal label="Gord"  val={`${estimated.fat}g`}     color={Colors.fat}     />
-                  <EstVal label="Fibra" val={`${estimated.fiber}g`}   color={Colors.fiber}   />
-                </View>
+                <TouchableOpacity
+                  style={[modal.btnAdd, (isEmpty || saving) && modal.btnDisabled]}
+                  onPress={handleAdd}
+                  disabled={isEmpty || saving}
+                >
+                  {saving ? <ActivityIndicator color={Colors.white} /> : <Text style={modal.btnAddText}>Adicionar outro</Text>}
+                </TouchableOpacity>
               </View>
-            )}
-
-            <View style={modal.actions}>
-              <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
-                <Text style={modal.btnCancelText}>Fechar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[modal.btnAdd, (isEmpty || saving) && modal.btnDisabled]}
-                onPress={handleAdd}
-                disabled={isEmpty || saving}
-              >
-                {saving ? <ActivityIndicator color={Colors.white} /> : <Text style={modal.btnAddText}>Adicionar outro</Text>}
-              </TouchableOpacity>
             </View>
-          </View>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -886,6 +918,8 @@ function VoiceModal({
             style={modal.body}
             contentContainerStyle={modal.bodyContent}
             showsVerticalScrollIndicator
+            nestedScrollEnabled
+            keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled"
           >
             <TouchableOpacity
@@ -1180,6 +1214,8 @@ export function PhotoModal({
             style={modal.body}
             contentContainerStyle={modal.bodyContent}
             showsVerticalScrollIndicator
+            nestedScrollEnabled
+            keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled"
           >
             <View style={photoModal.photoActions}>
@@ -1447,6 +1483,7 @@ export function AddMealScreen({
 
     let savedCount = 0;
     let firebaseFallbackCount = 0;
+    let firstFirebaseError: unknown = null;
 
     for (const item of items) {
       if (!item.food) continue;
@@ -1469,6 +1506,7 @@ export function AddMealScreen({
         console.warn(`${source} meal save failed, using local entry`, error);
         entry = createLocalEntry(user.id, payload);
         firebaseFallbackCount += 1;
+        firstFirebaseError ??= error;
       }
       addEntryFn(entry);
       if (source === 'photo' && item.food.id.startsWith('global_')) {
@@ -1490,7 +1528,7 @@ export function AddMealScreen({
     if (firebaseFallbackCount > 0) {
       Alert.alert(
         'Salvo neste aparelho',
-        'Não consegui sincronizar alguns itens com o Firebase agora, mas registrei no dia atual.'
+        `Não consegui sincronizar alguns itens com o Firebase agora, mas registrei no dia atual.\n\n${firebaseErrorMessage(firstFirebaseError)}`
       );
     }
 
@@ -1762,7 +1800,7 @@ const modal = StyleSheet.create({
   chip:     { backgroundColor: Colors.green50, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6 },
   chipText: { fontSize: Typography.sm, fontWeight: Typography.semibold, color: Colors.green600 },
   searchPanel: { flexShrink: 0 },
-  suggestionBox: { flex: 1, minHeight: 160, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, overflow: 'hidden', marginBottom: Spacing.sm, backgroundColor: Colors.white },
+  suggestionBox: { minHeight: 130, maxHeight: 230, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, overflow: 'hidden', marginBottom: Spacing.sm, backgroundColor: Colors.white },
   foodOption: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border },
   foodOptionActive: { backgroundColor: Colors.green50 },
   foodEmoji: { fontSize: 22, width: 28, textAlign: 'center' },
@@ -1772,6 +1810,10 @@ const modal = StyleSheet.create({
   foodUnit: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
   noResults: { padding: Spacing.md, alignItems: 'center' },
   noResultsText: { fontSize: Typography.sm, color: Colors.gray400 },
+  aiCreateOption: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md, backgroundColor: Colors.green50 },
+  aiIcon: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.green400 },
+  aiCreateTitle: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.green600 },
+  aiCreateText: { fontSize: Typography.xs, color: Colors.gray600, marginTop: 2, lineHeight: 16 },
   bottomPanel: { flexShrink: 0, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.white },
   qtyRow: { flexDirection: 'row', gap: Spacing.sm, alignItems: 'flex-end' },
   qtyField: { width: 120 },

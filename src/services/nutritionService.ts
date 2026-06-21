@@ -226,7 +226,7 @@ export async function getSavedMeals(userId: string): Promise<SavedMeal[]> {
       createdAt: data.createdAt?.toDate() ?? new Date(),
       updatedAt: data.updatedAt?.toDate() ?? new Date(),
     } as SavedMeal;
-  });
+  }).filter((meal) => !(meal as SavedMeal & { deleted?: boolean }).deleted);
 }
 
 export async function saveMeal(

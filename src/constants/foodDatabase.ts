@@ -30,8 +30,26 @@ export function parseQuantityFromText(text: string): {
   if (t.includes('lata')) {
     return { quantity: (extractNumber(t) || 1) * 350, unit: 'mililitro' };
   }
+  if (t.includes('taça') || t.includes('taca')) {
+    return { quantity: (extractNumber(t) || 1) * 150, unit: 'mililitro' };
+  }
+  if (t.includes('dose') || t.includes('shot')) {
+    return { quantity: (extractNumber(t) || 1) * 50, unit: 'mililitro' };
+  }
+  if (t.includes('long neck') || t.includes('longneck')) {
+    return { quantity: (extractNumber(t) || 1) * 330, unit: 'mililitro' };
+  }
   if (t.includes('copo')) {
     return { quantity: (extractNumber(t) || 1) * 200, unit: 'mililitro' };
+  }
+  if (t.includes('pacote') || t.includes('saco')) {
+    return { quantity: (extractNumber(t) || 1) * 50, unit: 'grama' };
+  }
+  if (t.includes('barra')) {
+    return { quantity: (extractNumber(t) || 1) * 30, unit: 'grama' };
+  }
+  if (t.includes('punhado')) {
+    return { quantity: (extractNumber(t) || 1) * 30, unit: 'grama' };
   }
   if (t.includes('xícara') || t.includes('xicara')) {
     return { quantity: extractNumber(t) || 1, unit: 'xicara' };

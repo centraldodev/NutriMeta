@@ -15,7 +15,7 @@ import { Colors, Radius, Spacing, Typography, Shadows } from './src/constants/th
 import { isFirebaseConfigured } from './src/config';
 import { useStore } from './src/store';
 import { getUserAccount, getUserProfile, onAuthChange } from './src/services/authService';
-import { subscribeDailyLog } from './src/services/nutritionService';
+import { getSavedMeals, subscribeDailyLog } from './src/services/nutritionService';
 import { getCachedDailyLog, saveCachedDailyLog } from './src/services/dailyLogStorage';
 import { subscribeGroupNotifications } from './src/services/groupService';
 import { calcMacroGoals, formatDate, generateId } from './src/utils/nutrition';
@@ -35,6 +35,7 @@ function MainTabs() {
   const insets = useSafeAreaInsets();
   const tabBarBottom = Platform.OS === 'web' ? 0 : insets.bottom;
   const waterFabBottom = tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm;
+  const screenFabBottom = Platform.OS === 'web' ? waterFabBottom : Spacing.base;
 
   const tabs = useMemo(
     () => [
@@ -82,9 +83,9 @@ function MainTabs() {
     <View style={styles.appShell}>
       <View style={[styles.content, { paddingBottom: tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm }]}>
         {tab === 'home' && <HomeScreen waterOpen={waterOpen} onWaterClose={() => setWaterOpen(false)} onAddWater={handleAddWater} />}
-        {tab === 'addMeal' && <AddMealScreen onMealAdded={() => setTab('analysis')} fabBottomOffset={waterFabBottom} />}
+        {tab === 'addMeal' && <AddMealScreen onMealAdded={() => setTab('analysis')} fabBottomOffset={screenFabBottom} />}
         {tab === 'analysis' && <AnalysisScreen />}
-        {tab === 'ranking' && <RankingScreen fabBottomOffset={waterFabBottom} />}
+        {tab === 'ranking' && <RankingScreen fabBottomOffset={screenFabBottom} />}
       </View>
 
       {tab === 'home' && (
@@ -131,6 +132,7 @@ export default function App() {
   const setUser = useStore((state) => state.setUser);
   const setProfile = useStore((state) => state.setProfile);
   const setGoals = useStore((state) => state.setGoals);
+  const setSavedMeals = useStore((state) => state.setSavedMeals);
   const setTodayLog = useStore((state) => state.setTodayLog);
   const setNotifications = useStore((state) => state.setNotifications);
   const [authReady, setAuthReady] = useState(false);
@@ -204,6 +206,31 @@ export default function App() {
       unsubscribe();
     };
   }, [setTodayLog, user]);
+
+  useEffect(() => {
+    if (!user || user.role === 'nutritionist') {
+      setSavedMeals([]);
+      return;
+    }
+
+    if (user.id === 'dev_user' || !isFirebaseConfigured) {
+      setSavedMeals([]);
+      return;
+    }
+
+    let active = true;
+    getSavedMeals(user.id)
+      .then((meals) => {
+        if (active) setSavedMeals(meals);
+      })
+      .catch((error) => {
+        console.warn('Failed to load saved meals from Firebase', error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [setSavedMeals, user]);
 
   useEffect(() => {
     if (!todayLog) return;
