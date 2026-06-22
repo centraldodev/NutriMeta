@@ -26,7 +26,7 @@ import {
   subscribeCommunityPosts,
   unfollowCommunityUser,
 } from '../services/groupService';
-import { addMealEntry } from '../services/nutritionService';
+import { saveMealEntryOrQueue } from '../services/pendingSyncService';
 import { getCustomFoods, saveCustomFood } from '../services/customFoodService';
 import { useStore, selectGoals } from '../store';
 import { formatBrasiliaDate, formatNutritionDetails, generateId, getInitials, sumNutrition } from '../utils/nutrition';
@@ -256,7 +256,7 @@ export function RankingScreen({
     }
   }
 
-  async function handlePhotoConfirm(items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; summary: string; caption: string }) {
+  async function handlePhotoConfirm(items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; mimeType?: string; summary: string; caption: string }) {
     if (!user) {
       Alert.alert('Perfil não carregado', 'Aguarde o app carregar seus dados e tente novamente.');
       return;
@@ -288,9 +288,13 @@ export function RankingScreen({
 
       let entry: MealEntry;
       try {
-        entry = isFirebaseConfigured && user.id !== 'dev_user' && goals
-          ? await addMealEntry(user.id, goals, payload)
+        const result = isFirebaseConfigured && user.id !== 'dev_user' && goals
+          ? await saveMealEntryOrQueue({ userId: user.id, goals, payload })
           : { ...payload, id: generateId(), userId: user.id, addedAt: new Date() };
+        entry = 'entry' in result ? result.entry : result;
+        if ('queued' in result && result.queued) {
+          console.warn('Community photo meal queued for sync', result.error);
+        }
       } catch (error) {
         console.warn('Community photo meal save failed, using local entry', error);
         entry = { ...payload, id: generateId(), userId: user.id, addedAt: new Date() };
@@ -323,6 +327,7 @@ export function RankingScreen({
         authorId: user.id,
         authorName: displayName,
         imageUri: photo.imageUri,
+        imageMimeType: photo.mimeType,
         caption: photo.caption,
         nutrition: sumNutrition(validItems.map((item) => ({ nutrition: item.nutrition }))),
         foodNames: validItems.map((item) => item.food?.name ?? item.foodText).filter(Boolean),

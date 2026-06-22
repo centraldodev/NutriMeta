@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   ScrollView,
@@ -82,7 +83,11 @@ export function NutritionistChatModal({
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.bg}>
+      <KeyboardAvoidingView
+        style={styles.bg}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+      >
         <TouchableOpacity style={styles.backdrop} onPress={onClose} />
         <View style={styles.sheet}>
           <View style={styles.handle} />
@@ -96,7 +101,11 @@ export function NutritionistChatModal({
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.messages} contentContainerStyle={styles.messageContent}>
+          <ScrollView
+            style={styles.messages}
+            contentContainerStyle={styles.messageContent}
+            keyboardShouldPersistTaps="handled"
+          >
             {messages.length === 0 ? (
               <View style={styles.emptyBox}>
                 <MaterialIcons name="chat-bubble-outline" size={34} color={Colors.gray400} />
@@ -137,7 +146,7 @@ export function NutritionistChatModal({
             </TouchableOpacity>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

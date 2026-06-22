@@ -17,6 +17,7 @@
     "android": {
       "package": "com.n2ilva.nutrimeta",
       "googleServicesFile": "./google-services.json",
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./public/icone.png",
         "backgroundColor": "#ffffff"
@@ -40,7 +41,7 @@
       "firebaseWebAppId": "1:273605316772:web:c7cf3b15e3e9e905ab5631",
       "firebaseMeasurementId": "G-H9X0SD76J7",
       "googleWebClientId": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com",
-      "googleAndroidClientId": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com",
+      "googleAndroidClientId": "273605316772-nvofb2i1qlv99fcpqm1ra77f4u1vqlbj.apps.googleusercontent.com",
       "eas": {
         "projectId": "876471ea-20d8-47e1-8ef6-03ede7b250dd"
       }

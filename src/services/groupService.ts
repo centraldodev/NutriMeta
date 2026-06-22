@@ -45,18 +45,40 @@ const COMMUNITY_POSTS_COLLECTION = COLLECTIONS.communityPosts || 'communityPosts
 const COMMUNITY_FOLLOWS_COLLECTION = COLLECTIONS.communityFollows || 'communityFollows';
 const COMMUNITY_COMMENTS_COLLECTION = COLLECTIONS.communityComments || 'communityComments';
 
-async function uploadCommunityImage(authorId: string, imageUri: string): Promise<string> {
-  const response = await fetch(imageUri);
-  const blob = await response.blob();
-  const imageRef = ref(storage, `communityPosts/${GLOBAL_COMMUNITY_ID}/${authorId}_${Date.now()}.jpg`);
-  await uploadBytes(imageRef, blob, { contentType: 'image/jpeg' });
-  return getDownloadURL(imageRef);
+async function uriToBlob(uri: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.onload = () => resolve(xhr.response as Blob);
+    xhr.onerror = () => reject(new Error('Failed to prepare image upload'));
+    xhr.responseType = 'blob';
+    xhr.open('GET', uri, true);
+    xhr.send(null);
+  });
+}
+
+async function uploadCommunityImage(
+  authorId: string,
+  postId: string,
+  imageUri: string,
+  mimeType = 'image/jpeg'
+): Promise<string> {
+  const blob = await uriToBlob(imageUri);
+  const extension = mimeType.includes('png') ? 'png' : 'jpg';
+  const imageRef = ref(storage, `communityPosts/${GLOBAL_COMMUNITY_ID}/${authorId}/${postId}.${extension}`);
+
+  try {
+    await uploadBytes(imageRef, blob, { contentType: mimeType });
+    return await getDownloadURL(imageRef);
+  } finally {
+    (blob as Blob & { close?: () => void }).close?.();
+  }
 }
 
 export async function addCommunityPost({
   authorId,
   authorName,
   imageUri,
+  imageMimeType,
   caption,
   nutrition,
   foodNames,
@@ -65,14 +87,16 @@ export async function addCommunityPost({
   authorId: string;
   authorName: string;
   imageUri: string;
+  imageMimeType?: string;
   caption?: string;
   nutrition: FoodNutrition;
   foodNames: string[];
   mealPeriod: CommunityPost['mealPeriod'];
 }): Promise<CommunityPost> {
-  const imageUrl = await uploadCommunityImage(authorId, imageUri);
+  const id = generateId();
+  const imageUrl = await uploadCommunityImage(authorId, id, imageUri, imageMimeType);
   const post: CommunityPost = {
-    id: generateId(),
+    id,
     groupId: GLOBAL_COMMUNITY_ID,
     authorId,
     authorName,

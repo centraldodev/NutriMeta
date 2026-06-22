@@ -24,9 +24,11 @@ import { saveUserProfile, signOut } from '../services/authService';
 import { refineDietGoals } from '../services/goalAiService';
 import { respondNutritionistInvite, subscribePatientAcceptedNutritionistLinks, subscribePatientNutritionistInvites } from '../services/nutritionistLinkService';
 import { subscribeUnreadChatCountByLink } from '../services/nutritionistChatService';
+import { subscribePatientFoodPlans } from '../services/nutritionistService';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { NutritionistChatModal } from '../components/NutritionistChatModal';
 import { useStore, selectGoals, selectNotifications, selectTodayLog, selectUnreadCount } from '../store';
-import { calcMacroGoals, formatBrasiliaDate, formatKcal, formatGrams, getBrasiliaHour, macroPercent } from '../utils/nutrition';
+import { calcMacroGoals, formatBrasiliaDate, formatKcal, formatGrams, formatNutritionDetails, getBrasiliaHour, macroPercent } from '../utils/nutrition';
 import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
 import {
   buildValidatedProfileValues,
@@ -39,7 +41,7 @@ import {
   parseProfileNumber,
   validateProfileBasics,
 } from '../utils/profileValidation';
-import { ActivityLevel, BiologicalSex, FoodNutrition, GoalType, MacroGoals, NutritionistPatientLink, UserProfile } from '../types';
+import { ActivityLevel, BiologicalSex, FoodNutrition, FoodPlan, GoalType, MacroGoals, NutritionistPatientLink, ShoppingListItem, UserProfile } from '../types';
 
 const RING_SIZE = 160;
 const RING_STROKE = 14;
@@ -175,6 +177,65 @@ function parseNumber(value: string, fallback: number) {
   return parseProfileNumber(value, fallback);
 }
 
+function mergeShoppingList(items: ShoppingListItem[]): ShoppingListItem[] {
+  const byName = new Map<string, ShoppingListItem>();
+  items.forEach((item) => {
+    const key = item.name.trim().toLowerCase();
+    if (!key) return;
+    const current = byName.get(key);
+    if (!current) {
+      byName.set(key, item);
+      return;
+    }
+    byName.set(key, {
+      ...current,
+      quantity: [current.quantity, item.quantity].filter(Boolean).join(' + '),
+      unit: current.unit || item.unit,
+    });
+  });
+  return Array.from(byName.values());
+}
+
+function FoodPlanCard({ plan }: { plan: FoodPlan }) {
+  const shoppingList = mergeShoppingList(plan.shoppingList);
+  return (
+    <View style={styles.foodPlanPanel}>
+      <View style={styles.foodPlanHeader}>
+        <View>
+          <Text style={styles.foodPlanEyebrow}>Plano alimentar</Text>
+          <Text style={styles.foodPlanTitle}>{plan.title}</Text>
+        </View>
+        <Text style={styles.foodPlanAuthor}>{plan.nutritionistName}</Text>
+      </View>
+      {plan.notes ? <Text style={styles.foodPlanNotes}>{plan.notes}</Text> : null}
+      {plan.totalNutrition ? (
+        <Text style={styles.foodPlanNotes}>{formatNutritionDetails(plan.totalNutrition, { includeKcal: true })}</Text>
+      ) : null}
+      {plan.meals.slice(0, 4).map((meal) => (
+        <View key={`${meal.period}_${meal.title}`} style={styles.foodPlanMeal}>
+          <Text style={styles.foodPlanMealTitle}>{meal.time ? `${meal.time} · ${meal.title}` : meal.title}</Text>
+          <Text style={styles.foodPlanMealItems}>
+            {meal.items.map((item) => `${item.quantity} ${item.name}`.trim()).join(', ')}
+          </Text>
+        </View>
+      ))}
+      <Text style={styles.shoppingTitle}>Lista de compras</Text>
+      {shoppingList.length === 0 ? (
+        <Text style={styles.foodPlanNotes}>O nutricionista ainda não adicionou itens de compra.</Text>
+      ) : (
+        shoppingList.map((item) => (
+          <View key={`${item.name}_${item.quantity}_${item.unit ?? ''}`} style={styles.shoppingItem}>
+            <MaterialIcons name="check-box-outline-blank" size={18} color={Colors.green600} />
+            <Text style={styles.shoppingText}>
+              {item.name}{item.quantity ? ` - ${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : ''}
+            </Text>
+          </View>
+        ))
+      )}
+    </View>
+  );
+}
+
 function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const user = useStore((s) => s.user);
   const profile = useStore((s) => s.profile);
@@ -207,7 +268,7 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
 
   useEffect(() => {
     if (!visible) return;
-    const activeGoals = { ...DEFAULT_GOALS, ...(goals ?? {}) };
+    const activeGoals = { ...DEFAULT_GOALS, ...(profile?.macroGoals ?? goals ?? {}) };
     setName(profile?.name ?? user?.name ?? '');
     setAge(String(profile?.age ?? ''));
     setWeight(formatWeightInput(profile?.weight));
@@ -253,6 +314,7 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
       activityLevel: activity,
       onboardingComplete: true,
       groupIds: profile?.groupIds ?? [],
+      macroGoals: profile?.macroGoals,
       communityPrivacy: profile?.communityPrivacy ?? {
         showProtein: true,
         showFiber: true,
@@ -358,15 +420,16 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
       sugar: Math.round(parseNumber(goalInputs.sugar, DEFAULT_GOALS.sugar)),
       sodium: Math.round(parseNumber(goalInputs.sodium, DEFAULT_GOALS.sodium)),
     };
+    const profileToSave: UserProfile = { ...nextProfile, macroGoals: nextGoals };
 
     setSaving(true);
     try {
       if (isFirebaseConfigured && user.id !== 'dev_user') {
-        await saveUserProfile(nextProfile);
+        await saveUserProfile(profileToSave);
       }
-      setProfile(nextProfile);
+      setProfile(profileToSave);
       setGoals(nextGoals);
-      setUser({ ...user, name: nextProfile.name, avatarUrl });
+      setUser({ ...user, name: profileToSave.name, avatarUrl });
       onClose();
     } catch {
       Alert.alert('Erro', 'Não foi possível salvar as configurações.');
@@ -605,20 +668,14 @@ function NotificationsModal({
   onClose,
   nutritionistInvites,
   onRespondInvite,
-  chatLinks,
-  unreadChatCounts,
-  onOpenChat,
 }: {
   visible: boolean;
   onClose: () => void;
   nutritionistInvites: NutritionistPatientLink[];
   onRespondInvite: (linkId: string, status: 'accepted' | 'rejected') => void;
-  chatLinks: NutritionistPatientLink[];
-  unreadChatCounts: Record<string, number>;
-  onOpenChat: (link: NutritionistPatientLink) => void;
 }) {
   const notifications = useStore(selectNotifications);
-  const hasItems = notifications.length > 0 || nutritionistInvites.length > 0 || chatLinks.length > 0;
+  const hasItems = notifications.length > 0 || nutritionistInvites.length > 0;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -657,18 +714,6 @@ function NotificationsModal({
                     </View>
                   </View>
                 ))}
-                {chatLinks.map((link) => {
-                  const unread = unreadChatCounts[link.id] ?? 0;
-                  return (
-                    <TouchableOpacity key={link.id} style={modalStyles.noticeCard} onPress={() => onOpenChat(link)}>
-                      <Text style={modalStyles.noticeTitle}>Chat com nutricionista</Text>
-                      <Text style={modalStyles.noticeText}>{link.nutritionistName}</Text>
-                      <Text style={modalStyles.noticeMeta}>
-                        {unread > 0 ? `${unread} mensagem(ns) nova(s)` : 'Toque para abrir a conversa'}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
                 {notifications.map((item) => (
                   <View key={item.id} style={modalStyles.noticeCard}>
                     <Text style={modalStyles.noticeTitle}>{item.userName || 'NutriMeta'}</Text>
@@ -676,6 +721,58 @@ function NotificationsModal({
                   </View>
                 ))}
               </>
+            )}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function ChatsModal({
+  visible,
+  onClose,
+  chatLinks,
+  unreadChatCounts,
+  onOpenChat,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  chatLinks: NutritionistPatientLink[];
+  unreadChatCounts: Record<string, number>;
+  onOpenChat: (link: NutritionistPatientLink) => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={modalStyles.bg}>
+        <TouchableOpacity style={modalStyles.backdrop} onPress={onClose} />
+        <View style={modalStyles.sheet}>
+          <View style={modalStyles.handle} />
+          <View style={modalStyles.header}>
+            <Text style={modalStyles.title}>Chats</Text>
+            <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn}>
+              <MaterialIcons name="close" size={20} color={Colors.gray600} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView contentContainerStyle={modalStyles.scroll}>
+            {chatLinks.length === 0 ? (
+              <View style={modalStyles.emptyNotice}>
+                <MaterialIcons name="chat-bubble-outline" size={34} color={Colors.gray400} />
+                <Text style={modalStyles.emptyNoticeText}>Seus chats iniciados aparecerão aqui.</Text>
+              </View>
+            ) : (
+              chatLinks.map((link) => {
+                const unread = unreadChatCounts[link.id] ?? 0;
+                return (
+                  <TouchableOpacity key={link.id} style={modalStyles.noticeCard} onPress={() => onOpenChat(link)}>
+                    <Text style={modalStyles.noticeTitle}>Chat com nutricionista</Text>
+                    <Text style={modalStyles.noticeText}>{link.nutritionistName}</Text>
+                    <Text style={modalStyles.noticeMeta}>
+                      {unread > 0 ? `${unread} mensagem(ns) nova(s)` : 'Toque para continuar a conversa'}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })
             )}
           </ScrollView>
         </View>
@@ -745,9 +842,13 @@ export function HomeScreen({
   const unreadCount = useStore(selectUnreadCount);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [chatsOpen, setChatsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [logoutLoading, setLogoutLoading] = useState(false);
   const [nutritionistInvites, setNutritionistInvites] = useState<NutritionistPatientLink[]>([]);
   const [chatLinks, setChatLinks] = useState<NutritionistPatientLink[]>([]);
+  const [foodPlans, setFoodPlans] = useState<FoodPlan[]>([]);
   const [unreadChatCounts, setUnreadChatCounts] = useState<Record<string, number>>({});
   const [chatLink, setChatLink] = useState<NutritionistPatientLink | null>(null);
 
@@ -804,6 +905,14 @@ export function HomeScreen({
     return subscribeUnreadChatCountByLink(user.id, setUnreadChatCounts);
   }, [user]);
 
+  useEffect(() => {
+    if (!user || user.id === 'dev_user' || !isFirebaseConfigured) {
+      setFoodPlans([]);
+      return undefined;
+    }
+    return subscribePatientFoodPlans(user.id, setFoodPlans);
+  }, [user]);
+
   async function handleRespondNutritionistInvite(linkId: string, status: 'accepted' | 'rejected') {
     try {
       await respondNutritionistInvite(linkId, status);
@@ -823,29 +932,26 @@ export function HomeScreen({
   const firstName = (profile?.name ?? user?.name ?? 'Usuário').split(' ')[0];
   const initials = (profile?.name ?? user?.name ?? 'U').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
 
+  const unreadChatTotal = Object.values(unreadChatCounts).reduce((sum, count) => sum + count, 0);
+  const latestFoodPlan = foodPlans[0] ?? null;
+
   const today = formatBrasiliaDate(new Date(), {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
   });
 
-  async function handleLogout() {
-    Alert.alert('Sair da conta', 'Você quer sair do NutriMeta?', [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Sair',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await signOut();
-          } catch {
-            // Even if Firebase is offline, clear the in-memory app state.
-          } finally {
-            clearAuth();
-          }
-        },
-      },
-    ]);
+  async function confirmLogout() {
+    setLogoutLoading(true);
+    try {
+      await signOut();
+    } catch {
+      // Even if Firebase is offline, clear the in-memory app state.
+    } finally {
+      setLogoutLoading(false);
+      setLogoutConfirmOpen(false);
+      clearAuth();
+    }
   }
 
   return (
@@ -855,16 +961,20 @@ export function HomeScreen({
           <Text style={styles.greeting}>{greeting}</Text>
           <View style={styles.nameRow}>
             <Text style={styles.userName}>{firstName}</Text>
-            <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+            <TouchableOpacity style={styles.logoutBtn} onPress={() => setLogoutConfirmOpen(true)}>
               <Text style={styles.logoutText}>Sair</Text>
             </TouchableOpacity>
           </View>
           <Text style={styles.dateLabel}>{today}</Text>
         </View>
         <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.helpButton} onPress={() => setChatsOpen(true)}>
+            <MaterialIcons name="chat-bubble-outline" size={21} color={Colors.green600} />
+            {unreadChatTotal > 0 && <View style={styles.notificationDot} />}
+          </TouchableOpacity>
           <TouchableOpacity style={styles.helpButton} onPress={() => setNotificationsOpen(true)}>
             <MaterialIcons name="notifications-none" size={21} color={Colors.green600} />
-            {unreadCount + nutritionistInvites.length + Object.values(unreadChatCounts).reduce((sum, count) => sum + count, 0) > 0 && <View style={styles.notificationDot} />}
+            {unreadCount + nutritionistInvites.length > 0 && <View style={styles.notificationDot} />}
           </TouchableOpacity>
           <TouchableOpacity style={styles.helpButton} onPress={() => setHelpOpen(true)}>
             <MaterialIcons name="help-outline" size={21} color={Colors.green600} />
@@ -910,21 +1020,36 @@ export function HomeScreen({
         </View>
 
         <NutritionGoalTable rows={nutritionGoalRows} totals={totals} waterMl={waterMl} />
+        {latestFoodPlan ? <FoodPlanCard plan={latestFoodPlan} /> : null}
       </ScrollView>
 
       <SettingsModal visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <HelpModal visible={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ConfirmDialog
+        visible={logoutConfirmOpen}
+        title="Sair da conta"
+        message="Você quer sair do NutriMeta?"
+        confirmText="Sair"
+        destructive
+        loading={logoutLoading}
+        onCancel={() => setLogoutConfirmOpen(false)}
+        onConfirm={confirmLogout}
+      />
+      <ChatsModal
+        visible={chatsOpen}
+        onClose={() => setChatsOpen(false)}
+        chatLinks={chatLinks}
+        unreadChatCounts={unreadChatCounts}
+        onOpenChat={(link) => {
+          setChatLink(link);
+          setChatsOpen(false);
+        }}
+      />
       <NotificationsModal
         visible={notificationsOpen}
         onClose={() => setNotificationsOpen(false)}
         nutritionistInvites={nutritionistInvites}
         onRespondInvite={handleRespondNutritionistInvite}
-        chatLinks={chatLinks}
-        unreadChatCounts={unreadChatCounts}
-        onOpenChat={(link) => {
-          setChatLink(link);
-          setNotificationsOpen(false);
-        }}
       />
       <NutritionistChatModal
         visible={Boolean(chatLink)}
@@ -1019,6 +1144,28 @@ const styles = StyleSheet.create({
   remainCenter: { borderLeftWidth: 1, borderRightWidth: 1, borderColor: Colors.border, paddingHorizontal: Spacing.sm },
   remainVal: { fontSize: Typography.lg, fontWeight: Typography.bold },
   remainLabel: { fontSize: Typography.xs, color: Colors.gray400 },
+
+  foodPlanPanel: {
+    marginHorizontal: Spacing.base,
+    marginBottom: Spacing.sm,
+    backgroundColor: Colors.white,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.lg,
+    padding: Spacing.base,
+    ...Shadows.sm,
+  },
+  foodPlanHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: Spacing.sm, marginBottom: Spacing.sm },
+  foodPlanEyebrow: { fontSize: Typography.xs, color: Colors.green600, fontWeight: Typography.bold, textTransform: 'uppercase', letterSpacing: 0.4 },
+  foodPlanTitle: { marginTop: 2, fontSize: Typography.lg, color: Colors.gray800, fontWeight: Typography.bold },
+  foodPlanAuthor: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.bold },
+  foodPlanNotes: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 19, marginBottom: Spacing.sm },
+  foodPlanMeal: { backgroundColor: Colors.gray50, borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.xs },
+  foodPlanMealTitle: { fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.bold },
+  foodPlanMealItems: { marginTop: 3, fontSize: Typography.xs, color: Colors.gray600, lineHeight: 17 },
+  shoppingTitle: { marginTop: Spacing.sm, marginBottom: Spacing.xs, fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.bold },
+  shoppingItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingVertical: 5 },
+  shoppingText: { flex: 1, fontSize: Typography.sm, color: Colors.gray600 },
 
   nutritionPanel: {
     marginHorizontal: Spacing.base,

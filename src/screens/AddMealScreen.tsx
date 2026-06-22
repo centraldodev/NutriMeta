@@ -8,11 +8,13 @@ import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, Radius, Shadows } from '../constants/theme';
 import { useStore, selectGoals, selectSavedMeals } from '../store';
-import { addMealEntry, incrementMealUsage, removeMealEntry } from '../services/nutritionService';
+import { incrementMealUsage, removeMealEntry } from '../services/nutritionService';
 import { addCommunityPost } from '../services/groupService';
+import { removePendingMealEntryByEntryId, saveMealEntryOrQueue, subscribePendingMealEntries } from '../services/pendingSyncService';
 import { analyzeMealPhoto, PhotoMealAiItem } from '../services/photoMealAiService';
 import { customFoodId, getCustomFoods, saveCustomFood } from '../services/customFoodService';
 import { generateFoodNutrition } from '../services/foodNutritionAiService';
+import { enrichGlobalFood, hasExpandedNutrition, mergeExpandedFoodNutrition } from '../services/globalFoodEnrichmentService';
 import {
   parseQuantityFromText,
   calculateNutrition,
@@ -26,7 +28,7 @@ import { isFirebaseConfigured } from '../config';
 declare const require: (name: string) => any;
 
 const enrichedFoodIdsThisSession = new Set<string>();
-const ENRICH_FOODS_PER_LOAD = 1;
+const ENRICH_FOODS_PER_LOAD = 8;
 let foodEnrichmentPaused = false;
 
 type SpeechRecognitionModule = {
@@ -48,66 +50,6 @@ function loadSpeechRecognitionModule(): SpeechRecognitionModule | null {
 function getFoodUnits(food: FoodItem | null): QuantityUnit[] {
   if (!food) return ['porcao', 'colher_sopa', 'xicara', 'grama'];
   return Object.keys(food.nutritionPer) as QuantityUnit[];
-}
-
-function hasExpandedNutrition(food: FoodItem): boolean {
-  const nutrition = food.nutritionPer[food.defaultUnit] ?? Object.values(food.nutritionPer)[0];
-  if (!nutrition) return false;
-  const expandedKeys: (keyof FoodNutrition)[] = [
-    'sodium',
-    'sugar',
-    'calcium',
-    'iron',
-    'potassium',
-    'magnesium',
-    'zinc',
-    'vitaminA',
-    'vitaminC',
-    'vitaminD',
-    'vitaminE',
-    'vitaminB12',
-    'folate',
-  ];
-  return expandedKeys.filter((key) => ((nutrition[key] as number | undefined) ?? 0) > 0).length >= 6;
-}
-
-function mergeExpandedFoodNutrition(original: FoodItem, generated: FoodItem): FoodItem {
-  const originalUnit = original.defaultUnit;
-  const originalNutrition = original.nutritionPer[originalUnit] ?? Object.values(original.nutritionPer)[0];
-  const generatedNutrition = generated.nutritionPer[generated.defaultUnit] ?? Object.values(generated.nutritionPer)[0];
-
-  if (!originalNutrition || !generatedNutrition) return original;
-
-  const fillOptional = (key: keyof FoodNutrition) => {
-    const current = originalNutrition[key] as number | undefined;
-    const next = generatedNutrition[key] as number | undefined;
-    return current && current > 0 ? current : next;
-  };
-
-  return {
-    ...original,
-    emoji: original.emoji || generated.emoji,
-    aliases: Array.from(new Set([...original.aliases, ...generated.aliases, generated.name.toLowerCase()])),
-    nutritionPer: {
-      ...original.nutritionPer,
-      [originalUnit]: {
-        ...originalNutrition,
-        sodium: fillOptional('sodium'),
-        sugar: fillOptional('sugar'),
-        calcium: fillOptional('calcium'),
-        iron: fillOptional('iron'),
-        potassium: fillOptional('potassium'),
-        magnesium: fillOptional('magnesium'),
-        zinc: fillOptional('zinc'),
-        vitaminA: fillOptional('vitaminA'),
-        vitaminC: fillOptional('vitaminC'),
-        vitaminD: fillOptional('vitaminD'),
-        vitaminE: fillOptional('vitaminE'),
-        vitaminB12: fillOptional('vitaminB12'),
-        folate: fillOptional('folate'),
-      },
-    },
-  };
 }
 
 function findAnyFood(query: string, customFoods: FoodItem[] = []): FoodItem | undefined {
@@ -451,6 +393,24 @@ function AddMealModal({
     setFoodQuery(food.name);
     setQuantity('1');
     setUnit(food.defaultUnit);
+    void enrichFoodBeforeUse(food);
+  }
+
+  async function enrichFoodBeforeUse(food: FoodItem): Promise<FoodItem> {
+    if (!isFirebaseConfigured || !user || user.id === 'dev_user' || hasExpandedNutrition(food)) return food;
+    try {
+      const enriched = await enrichGlobalFood({ userId: user.id, food });
+      setFoodItem(enriched);
+      setFoodQuery(enriched.name);
+      return enriched;
+    } catch (error) {
+      if (isAiLimitError(error)) {
+        console.warn('Nao foi possivel completar nutrientes agora: limite diario da IA atingido.');
+      } else {
+        console.warn('Failed to enrich selected food before saving', food.name, error);
+      }
+      return food;
+    }
   }
 
   function handleFoodQuery(value: string) {
@@ -471,6 +431,7 @@ function AddMealModal({
         setFoodQuery(food.name);
         setUnit(food.defaultUnit);
       }
+      food = await enrichFoodBeforeUse(food);
 
       const selectedUnit = food.nutritionPer[unit] ? unit : food.defaultUnit;
       const typedQuantity = parseQtyInput(quantity);
@@ -489,16 +450,25 @@ function AddMealModal({
         source:    'manual',
       } satisfies MealEntryPayload;
       let entry: MealEntry;
+      let queuedError: unknown = null;
       try {
-        entry = isFirebaseConfigured && user.id !== 'dev_user'
-          ? await addMealEntry(user.id, goals, payload)
-          : createLocalEntry(user.id, payload);
+        const result = isFirebaseConfigured && user.id !== 'dev_user'
+          ? await saveMealEntryOrQueue({ userId: user.id, goals, payload })
+          : { entry: createLocalEntry(user.id, payload), queued: false, error: undefined };
+        entry = result.entry;
+        queuedError = result.queued ? result.error : null;
       } catch (error) {
         console.warn('Manual meal save failed, using local entry', error);
         entry = createLocalEntry(user.id, payload);
         Alert.alert(
           'Salvo neste aparelho',
           `Não consegui sincronizar com o Firebase agora, mas registrei o alimento localmente.\n\n${firebaseErrorMessage(error)}`
+        );
+      }
+      if (queuedError) {
+        Alert.alert(
+          'Salvo neste aparelho',
+          `Nao consegui sincronizar com o Firebase agora, mas registrei o alimento localmente. Ele sera enviado automaticamente quando a conexao voltar.\n\n${firebaseErrorMessage(queuedError)}`
         );
       }
       addEntry(entry);
@@ -577,6 +547,7 @@ function AddMealModal({
               <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
                 {suggestions.map((food) => {
                   const selected = foodItem?.id === food.id;
+                  const incomplete = !hasExpandedNutrition(food);
                   return (
                     <TouchableOpacity
                       key={food.id}
@@ -588,6 +559,7 @@ function AddMealModal({
                         <Text style={[modal.foodName, selected && modal.foodNameActive]}>{food.name}</Text>
                         <Text style={modal.foodUnit}>Padrão: {UNIT_LABELS[food.defaultUnit]}</Text>
                       </View>
+                      {incomplete && !selected ? <MaterialIcons name="auto-awesome" size={18} color={Colors.warning} /> : null}
                       {selected && <MaterialIcons name="check-circle" size={20} color={Colors.green600} />}
                     </TouchableOpacity>
                   );
@@ -1035,11 +1007,12 @@ export function PhotoModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onConfirm: (items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; summary: string; caption: string }) => Promise<void> | void;
+  onConfirm: (items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; mimeType?: string; summary: string; caption: string }) => Promise<void> | void;
   customFoods: FoodItem[];
   allowPhotoOnlyPost?: boolean;
 }) {
   const [imageUri, setImageUri] = useState<string | null>(null);
+  const [imageMimeType, setImageMimeType] = useState<string | undefined>();
   const [summary, setSummary] = useState('');
   const [postCaption, setPostCaption] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
@@ -1054,6 +1027,7 @@ export function PhotoModal({
   React.useEffect(() => {
     if (!visible) return;
     setImageUri(null);
+    setImageMimeType(undefined);
     setSummary('');
     setPostCaption('');
     setAnalyzing(false);
@@ -1095,6 +1069,7 @@ export function PhotoModal({
     }
 
     setImageUri(asset.uri);
+    setImageMimeType(asset.mimeType ?? 'image/jpeg');
     await analyzePhoto(asset.base64, asset.mimeType ?? 'image/jpeg');
   }
 
@@ -1146,12 +1121,13 @@ export function PhotoModal({
   async function confirm() {
     const itemsToSave = editableDrafts;
     const caption = postCaption.trim() || summary;
-    const photo = imageUri ? { imageUri, summary, caption } : undefined;
+    const photo = imageUri ? { imageUri, mimeType: imageMimeType, summary, caption } : undefined;
     setConfirming(true);
     try {
       await onConfirm(itemsToSave, mealPeriod, photo);
       setAddedCount((count) => count + itemsToSave.length);
       setImageUri(null);
+      setImageMimeType(undefined);
       setSummary('');
       setPostCaption('');
       setEditableDrafts([]);
@@ -1403,6 +1379,7 @@ export function AddMealScreen({
   const [voiceModal, setVoiceModal] = useState(false);
   const [photoModal, setPhotoModal] = useState(false);
   const [customFoods, setCustomFoods] = useState<FoodItem[]>([]);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
   function handleMealAdded() {
     setTimeout(() => onMealAdded?.(), 0);
@@ -1455,6 +1432,16 @@ export function AddMealScreen({
     };
   }, [user]);
 
+  React.useEffect(() => {
+    if (!user || user.id === 'dev_user') {
+      setPendingSyncCount(0);
+      return undefined;
+    }
+    return subscribePendingMealEntries((items) => {
+      setPendingSyncCount(items.length);
+    }, user.id);
+  }, [user]);
+
   const handleCreateFood = useCallback(async (foodName: string, preferredUnit: QuantityUnit) => {
     if (!user) throw new Error('Missing user');
     const existing = findAnyFood(foodName, customFoods);
@@ -1499,9 +1486,14 @@ export function AddMealScreen({
       } satisfies MealEntryPayload;
       let entry: MealEntry;
       try {
-        entry = isFirebaseConfigured && user.id !== 'dev_user'
-          ? await addMealEntry(user.id, goals, payload)
-          : createLocalEntry(user.id, payload);
+        const result = isFirebaseConfigured && user.id !== 'dev_user'
+          ? await saveMealEntryOrQueue({ userId: user.id, goals, payload })
+          : { entry: createLocalEntry(user.id, payload), queued: false, error: undefined };
+        entry = result.entry;
+        if (result.queued) {
+          firebaseFallbackCount += 1;
+          firstFirebaseError ??= result.error;
+        }
       } catch (error) {
         console.warn(`${source} meal save failed, using local entry`, error);
         entry = createLocalEntry(user.id, payload);
@@ -1543,7 +1535,7 @@ export function AddMealScreen({
     await saveDraftItems(items, 'voice', mealPeriod);
   }
 
-  async function publishPhotoPost(items: MealDraft[], mealPeriod: MealPeriod, photo: { imageUri: string; summary: string; caption: string }) {
+  async function publishPhotoPost(items: MealDraft[], mealPeriod: MealPeriod, photo: { imageUri: string; mimeType?: string; summary: string; caption: string }) {
     if (!user) return;
     const validItems = items.filter((item) => item.food);
     const nutrition = sumNutrition(validItems.map((item) => ({ nutrition: item.nutrition })));
@@ -1560,6 +1552,7 @@ export function AddMealScreen({
         authorId: user.id,
         authorName,
         imageUri: photo.imageUri,
+        imageMimeType: photo.mimeType,
         caption: photo.caption,
         nutrition,
         foodNames,
@@ -1572,7 +1565,7 @@ export function AddMealScreen({
     }
   }
 
-  async function handlePhotoConfirm(items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; summary: string; caption: string }) {
+  async function handlePhotoConfirm(items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; mimeType?: string; summary: string; caption: string }) {
     await saveDraftItems(items, 'photo', mealPeriod, { navigateAfter: false });
     if (photo) {
       Alert.alert('Publicar na comunidade?', 'Compartilhar a foto do prato com as informações nutricionais?', [
@@ -1592,24 +1585,42 @@ export function AddMealScreen({
     const meal = savedMeals.find((m) => m.id === mealId);
     if (!meal) return;
     if (isFirebaseConfigured && user.id !== 'dev_user') {
-      await incrementMealUsage(mealId);
+      try {
+        await incrementMealUsage(mealId);
+      } catch (error) {
+        console.warn('Failed to increment saved meal usage', error);
+      }
     }
+    let queuedCount = 0;
+    let firstQueueError: unknown = null;
     for (const e of meal.entries) {
       const payload = { ...e, mealPeriod: e.mealPeriod ?? getDefaultMealPeriod(), source: 'saved', savedMealId: mealId } satisfies MealEntryPayload;
-      const entry = isFirebaseConfigured && user.id !== 'dev_user'
-        ? await addMealEntry(user.id, goals, payload)
-        : {
-            ...payload,
-            id: generateId(),
-            userId: user.id,
-            addedAt: new Date(),
-          };
-      addEntryFn(entry);
+      const result = isFirebaseConfigured && user.id !== 'dev_user'
+        ? await saveMealEntryOrQueue({ userId: user.id, goals, payload })
+        : { entry: createLocalEntry(user.id, payload), queued: false, error: undefined };
+      if (result.queued) {
+        queuedCount += 1;
+        firstQueueError ??= result.error;
+      }
+      addEntryFn(result.entry);
+    }
+    if (queuedCount > 0) {
+      Alert.alert(
+        'Salvo neste aparelho',
+        `Adicionei a refeicao salva localmente. ${queuedCount} item(ns) serao sincronizados automaticamente quando a conexao voltar.\n\n${firebaseErrorMessage(firstQueueError)}`
+      );
     }
     handleMealAdded();
   }
 
   async function handleDeleteEntry(entry: MealEntry) {
+    if (user) {
+      const removedPending = await removePendingMealEntryByEntryId(user.id, entry.id);
+      if (removedPending) {
+        removeEntry(entry.id);
+        return;
+      }
+    }
     if (user && goals && isFirebaseConfigured && user.id !== 'dev_user') {
       try {
         await removeMealEntry(user.id, goals, entry);
@@ -1640,7 +1651,20 @@ export function AddMealScreen({
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.headerBar}>
-        <Text style={styles.headerTitle}>Registrar refeição</Text>
+        <View>
+          <Text style={styles.headerTitle}>Registrar refeição</Text>
+          {pendingSyncCount > 0 ? <Text style={styles.headerSubtitle}>Sincronização pendente</Text> : null}
+        </View>
+        {pendingSyncCount > 0 ? (
+          <View style={styles.pendingPill}>
+            <MaterialIcons name="cloud-off" size={16} color={Colors.warning} />
+            <Text style={styles.pendingPillText}>{pendingSyncCount}</Text>
+          </View>
+        ) : (
+          <View style={styles.syncedPill}>
+            <MaterialIcons name="cloud-done" size={16} color={Colors.green600} />
+          </View>
+        )}
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>
@@ -1712,8 +1736,12 @@ export function AddMealScreen({
 
 const styles = StyleSheet.create({
   safe:        { flex: 1, backgroundColor: Colors.bg },
-  headerBar:   { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', backgroundColor: Colors.white, padding: Spacing.base, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  headerBar:   { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', backgroundColor: Colors.white, padding: Spacing.base, borderBottomWidth: 1, borderBottomColor: Colors.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm },
   headerTitle: { fontSize: Typography.lg, fontWeight: Typography.bold },
+  headerSubtitle: { marginTop: 2, fontSize: Typography.xs, color: Colors.warning, fontWeight: Typography.semibold },
+  pendingPill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.fatL, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, paddingVertical: 6 },
+  pendingPillText: { color: Colors.warning, fontSize: Typography.xs, fontWeight: Typography.bold },
+  syncedPill: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50 },
   scroll:      { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', padding: Spacing.base, paddingBottom: 150 },
 
   fabDock: {

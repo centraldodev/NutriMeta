@@ -34,6 +34,10 @@ export async function saveCachedDailyLog(log: DailyLog): Promise<void> {
   await AsyncStorage.setItem(key(log.userId, log.date), JSON.stringify(serializeLog(log)));
 }
 
+export async function removeCachedDailyLog(userId: string, date: string): Promise<void> {
+  await AsyncStorage.removeItem(key(userId, date));
+}
+
 export async function getCachedDailyLog(userId: string, date: string): Promise<DailyLog | null> {
   const raw = await AsyncStorage.getItem(key(userId, date));
   if (!raw) return null;

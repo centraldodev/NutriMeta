@@ -14,10 +14,11 @@ import { RankingScreen } from './src/screens/RankingScreen';
 import { Colors, Radius, Spacing, Typography, Shadows } from './src/constants/theme';
 import { isFirebaseConfigured } from './src/config';
 import { useStore } from './src/store';
-import { getUserAccount, getUserProfile, onAuthChange } from './src/services/authService';
+import { getUserAccount, getUserProfile, onAuthChange, subscribeUserProfile } from './src/services/authService';
 import { getSavedMeals, subscribeDailyLog } from './src/services/nutritionService';
-import { getCachedDailyLog, saveCachedDailyLog } from './src/services/dailyLogStorage';
+import { getCachedDailyLog, removeCachedDailyLog, saveCachedDailyLog } from './src/services/dailyLogStorage';
 import { subscribeGroupNotifications } from './src/services/groupService';
+import { getPendingMealEntryCount, saveMealEntryOrQueue, syncPendingMealEntries } from './src/services/pendingSyncService';
 import { calcMacroGoals, formatDate, generateId } from './src/utils/nutrition';
 
 type MainTab = 'home' | 'addMeal' | 'analysis' | 'ranking';
@@ -65,14 +66,9 @@ function MainTabs() {
     };
 
     if (isFirebaseConfigured && user.id !== 'dev_user') {
-      try {
-        const { addMealEntry } = await import('./src/services/nutritionService');
-        const entry = await addMealEntry(user.id, goals, payload);
-        addEntry(entry);
-      } catch (error) {
-        console.warn('Failed to save water to Firebase', error);
-        addEntry({ ...payload, id: generateId(), userId: user.id, addedAt: new Date() });
-      }
+      const { entry, queued, error } = await saveMealEntryOrQueue({ userId: user.id, goals, payload });
+      if (queued) console.warn('Water saved locally and queued for sync', error);
+      addEntry(entry);
       return;
     }
 
@@ -161,7 +157,7 @@ export default function App() {
       if (!mounted) return;
       if (loadedProfile) {
         setProfile(loadedProfile);
-        setGoals(calcMacroGoals(loadedProfile));
+        setGoals(loadedProfile.macroGoals ?? calcMacroGoals(loadedProfile));
       }
       setAuthReady(true);
     });
@@ -177,28 +173,45 @@ export default function App() {
     const today = formatDate(new Date());
     let active = true;
 
-    getCachedDailyLog(user.id, today)
-      .then((cachedLog) => {
-        if (active && cachedLog) setTodayLog(cachedLog);
-      })
-      .catch((error) => {
-        console.warn('Failed to load cached daily log', error);
-      });
-
     if (user.id === 'dev_user' || !isFirebaseConfigured) {
+      getCachedDailyLog(user.id, today)
+        .then((cachedLog) => {
+          if (active && cachedLog) setTodayLog(cachedLog);
+        })
+        .catch((error) => {
+          console.warn('Failed to load cached daily log', error);
+        });
       return () => {
         active = false;
       };
     }
 
+    getPendingMealEntryCount(user.id)
+      .then(async (pendingCount) => {
+        if (!active) return;
+        if (pendingCount === 0) {
+          await removeCachedDailyLog(user.id, today);
+          return;
+        }
+        const cachedLog = await getCachedDailyLog(user.id, today);
+        if (active && cachedLog) setTodayLog(cachedLog);
+      })
+      .catch((error) => {
+        console.warn('Failed to prepare cached daily log', error);
+      });
+
     const unsubscribe = subscribeDailyLog(user.id, today, (log) => {
       if (!active) return;
-      if (log) {
-        setTodayLog(log);
-        saveCachedDailyLog(log).catch((error) => {
-          console.warn('Failed to cache Firebase daily log', error);
+      getPendingMealEntryCount(user.id)
+        .then(async (pendingCount) => {
+          if (!active) return;
+          if (pendingCount > 0) return;
+          setTodayLog(log);
+          await removeCachedDailyLog(user.id, today);
+        })
+        .catch((error) => {
+          console.warn('Failed to handle Firebase daily log snapshot', error);
         });
-      }
     });
 
     return () => {
@@ -206,6 +219,19 @@ export default function App() {
       unsubscribe();
     };
   }, [setTodayLog, user]);
+
+  useEffect(() => {
+    if (!user || user.role === 'nutritionist' || user.id === 'dev_user' || !isFirebaseConfigured) {
+      return undefined;
+    }
+
+    return subscribeUserProfile(user.id, (nextProfile) => {
+      setProfile(nextProfile);
+      if (nextProfile) {
+        setGoals(nextProfile.macroGoals ?? calcMacroGoals(nextProfile));
+      }
+    });
+  }, [setGoals, setProfile, user]);
 
   useEffect(() => {
     if (!user || user.role === 'nutritionist') {
@@ -233,11 +259,51 @@ export default function App() {
   }, [setSavedMeals, user]);
 
   useEffect(() => {
-    if (!todayLog) return;
-    saveCachedDailyLog(todayLog).catch((error) => {
-      console.warn('Failed to cache current daily log', error);
-    });
-  }, [todayLog]);
+    if (!todayLog || !user) return;
+
+    if (user.id === 'dev_user' || !isFirebaseConfigured) {
+      saveCachedDailyLog(todayLog).catch((error) => {
+        console.warn('Failed to cache current daily log', error);
+      });
+      return;
+    }
+
+    getPendingMealEntryCount(user.id)
+      .then((pendingCount) => (
+        pendingCount > 0
+          ? saveCachedDailyLog(todayLog)
+          : removeCachedDailyLog(user.id, todayLog.date)
+      ))
+      .catch((error) => {
+        console.warn('Failed to update local daily log cache', error);
+      });
+  }, [todayLog, user]);
+
+  useEffect(() => {
+    if (!user || user.role === 'nutritionist' || user.id === 'dev_user' || !isFirebaseConfigured) {
+      return undefined;
+    }
+
+    let syncing = false;
+    const runSync = async () => {
+      if (syncing) return;
+      syncing = true;
+      try {
+        await syncPendingMealEntries(user.id);
+        if (await getPendingMealEntryCount(user.id) === 0) {
+          await removeCachedDailyLog(user.id, formatDate(new Date()));
+        }
+      } catch (error) {
+        console.warn('Failed to sync pending meal entries', error);
+      } finally {
+        syncing = false;
+      }
+    };
+
+    runSync();
+    const interval = setInterval(runSync, 15000);
+    return () => clearInterval(interval);
+  }, [user]);
 
   useEffect(() => {
     const group = groups[0];

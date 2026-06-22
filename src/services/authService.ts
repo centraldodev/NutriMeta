@@ -13,7 +13,9 @@ import {
   doc,
   setDoc,
   getDoc,
+  onSnapshot,
   serverTimestamp,
+  Unsubscribe,
 } from 'firebase/firestore';
 import { auth, db, COLLECTIONS } from './firebase';
 import { User, UserProfile } from '../types';
@@ -116,6 +118,24 @@ export async function getUserProfile(userId: string): Promise<UserProfile | null
     createdAt: data.createdAt?.toDate() ?? new Date(),
     updatedAt: data.updatedAt?.toDate() ?? new Date(),
   } as UserProfile;
+}
+
+export function subscribeUserProfile(
+  userId: string,
+  onUpdate: (profile: UserProfile | null) => void
+): Unsubscribe {
+  return onSnapshot(doc(db, COLLECTIONS.profiles, userId), (snap) => {
+    if (!snap.exists()) {
+      onUpdate(null);
+      return;
+    }
+    const data = snap.data();
+    onUpdate({
+      ...data,
+      createdAt: data.createdAt?.toDate() ?? new Date(),
+      updatedAt: data.updatedAt?.toDate() ?? new Date(),
+    } as UserProfile);
+  });
 }
 
 // ─── Utils ───────────────────────────────────────────────────────────────────

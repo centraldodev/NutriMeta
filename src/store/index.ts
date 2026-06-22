@@ -89,7 +89,20 @@ export const useStore = create<AppStore>((set) => ({
   savedMeals:  [],
   nutritionLoading: false,
 
-  setTodayLog: (log) => set({ todayLog: log }),
+  setTodayLog: (log) =>
+    set((state) => {
+      if (!log || !state.todayLog || state.todayLog.id !== log.id) {
+        return { todayLog: log };
+      }
+
+      const incomingUpdatedAt = new Date(log.updatedAt).getTime();
+      const currentUpdatedAt = new Date(state.todayLog.updatedAt).getTime();
+      if (Number.isFinite(incomingUpdatedAt) && Number.isFinite(currentUpdatedAt) && incomingUpdatedAt < currentUpdatedAt) {
+        return {};
+      }
+
+      return { todayLog: log };
+    }),
 
   setGoals: (goals) => set({ goals }),
 
@@ -97,6 +110,10 @@ export const useStore = create<AppStore>((set) => ({
 
   addEntry: (entry) =>
     set((state) => {
+      if (state.todayLog?.entries.some((item) => item.id === entry.id)) {
+        return {};
+      }
+
       const entries = [...(state.todayLog?.entries ?? []), entry];
       const totalNutrition = sumNutrition(entries);
       const completedGoals = state.goals

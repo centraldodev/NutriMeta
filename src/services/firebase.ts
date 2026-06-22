@@ -83,6 +83,7 @@ export const COLLECTIONS = {
   communityFollows: 'communityFollows',
   nutritionistLinks: 'nutritionistLinks',
   nutritionistMessages: 'nutritionistMessages',
+  foodPlans: 'foodPlans',
   notifications: 'notifications',
 } as const;
 

@@ -24,6 +24,7 @@ export interface UserProfile {
   activityLevel: ActivityLevel;
   onboardingComplete: boolean;
   groupIds: string[];
+  macroGoals?: MacroGoals;
   communityPrivacy?: CommunityPrivacy;
   createdAt: Date;
   updatedAt: Date;
@@ -212,6 +213,44 @@ export interface NutritionistChatMessage {
   text: string;
   readBy: string[];
   createdAt: Date;
+}
+
+export type FoodPlanMealPeriod = MealPeriod;
+
+export interface FoodPlanMealItem {
+  name: string;
+  quantity: string;
+  notes?: string;
+  nutrition?: FoodNutrition;
+}
+
+export interface FoodPlanMeal {
+  period: FoodPlanMealPeriod;
+  title: string;
+  time?: string;
+  instructions?: string;
+  items: FoodPlanMealItem[];
+  totalNutrition?: FoodNutrition;
+}
+
+export interface ShoppingListItem {
+  name: string;
+  quantity: string;
+  unit?: string;
+}
+
+export interface FoodPlan {
+  id: string;
+  patientId: string;
+  nutritionistId: string;
+  nutritionistName: string;
+  title: string;
+  notes?: string;
+  meals: FoodPlanMeal[];
+  shoppingList: ShoppingListItem[];
+  totalNutrition?: FoodNutrition;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface CommunityComment {

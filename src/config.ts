@@ -1,5 +1,4 @@
 import Constants from 'expo-constants';
-import { Platform } from 'react-native';
 
 type FirebaseConfig = {
   apiKey: string;
@@ -13,17 +12,24 @@ type FirebaseConfig = {
 
 const extra = Constants.expoConfig?.extra ?? {};
 
+// This app uses the Firebase JS SDK on both web and Expo native builds.
+// The JS SDK must be initialized with the Firebase Web app credentials, even
+// when the bundle is running on Android/iOS.
+const firebaseJsApiKey =
+  process.env.EXPO_PUBLIC_FIREBASE_WEB_API_KEY ??
+  String(extra.firebaseWebApiKey ?? process.env.EXPO_PUBLIC_FIREBASE_API_KEY ?? extra.firebaseApiKey ?? '');
+
+const firebaseJsAppId =
+  process.env.EXPO_PUBLIC_FIREBASE_WEB_APP_ID ??
+  String(extra.firebaseWebAppId ?? process.env.EXPO_PUBLIC_FIREBASE_APP_ID ?? extra.firebaseAppId ?? '');
+
 export const firebaseConfig: FirebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY ?? String(
-    Platform.OS === 'web' ? extra.firebaseWebApiKey ?? extra.firebaseApiKey ?? '' : extra.firebaseApiKey ?? ''
-  ),
+  apiKey: firebaseJsApiKey,
   authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? String(extra.firebaseAuthDomain ?? ''),
   projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ?? String(extra.firebaseProjectId ?? ''),
   storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ?? String(extra.firebaseStorageBucket ?? ''),
   messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? String(extra.firebaseMessagingSenderId ?? ''),
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID ?? String(
-    Platform.OS === 'web' ? extra.firebaseWebAppId ?? extra.firebaseAppId ?? '' : extra.firebaseAppId ?? ''
-  ),
+  appId: firebaseJsAppId,
   measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID ?? String(extra.firebaseMeasurementId ?? ''),
 };
 

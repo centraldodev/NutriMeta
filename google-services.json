@@ -14,6 +14,22 @@
       },
       "oauth_client": [
         {
+          "client_id": "273605316772-nvofb2i1qlv99fcpqm1ra77f4u1vqlbj.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.n2ilva.nutrimeta",
+            "certificate_hash": "1a24528cc2cfc95430eb16dbe27dc6d41d522031"
+          }
+        },
+        {
+          "client_id": "273605316772-sjn90fua36asr9cr29qmgnd1e3kk2drl.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.n2ilva.nutrimeta",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
           "client_id": "273605316772-5ijf9tnrqrj3s4ku0d588uc6ur2lpifi.apps.googleusercontent.com",
           "client_type": 3
         }

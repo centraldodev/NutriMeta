@@ -9,8 +9,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "build:web": "expo export --platform web --output-dir dist && node fix-paths.js",
-    "build:android:preview": "eas build --platform android --profile preview",
-    "credentials:android": "eas credentials --platform android",
+    "build:android:preview": "npx eas-cli build --platform android --profile preview",
+    "credentials:android": "npx eas-cli credentials --platform android",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

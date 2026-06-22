@@ -3,7 +3,6 @@ import {
   getDoc,
   setDoc,
   updateDoc,
-  arrayUnion,
   collection,
   query,
   where,
@@ -11,6 +10,7 @@ import {
   limit,
   getDocs,
   onSnapshot,
+  runTransaction,
   serverTimestamp,
   Unsubscribe,
 } from 'firebase/firestore';
@@ -101,7 +101,7 @@ export function subscribeDailyLog(
 export async function addMealEntry(
   userId: string,
   goals: MacroGoals,
-  entry: Omit<MealEntry, 'id' | 'userId' | 'addedAt'>
+  entry: Omit<MealEntry, 'id' | 'userId' | 'addedAt'> & Partial<Pick<MealEntry, 'id' | 'userId' | 'addedAt'>>
 ): Promise<MealEntry> {
   const date  = formatDate(new Date());
   const logId = dailyLogId(userId, date);
@@ -109,40 +109,49 @@ export async function addMealEntry(
 
   const newEntry: MealEntry = {
     ...entry,
-    id:      generateId(),
+    id:      entry.id ?? generateId(),
     userId,
-    addedAt: new Date(),
+    addedAt: entry.addedAt ? new Date(entry.addedAt) : new Date(),
   };
 
-  const existing = await getDoc(ref);
+  await runTransaction(db, async (transaction) => {
+    const existing = await transaction.get(ref);
 
-  if (!existing.exists()) {
-    const total  = entry.nutrition;
-    const log: DailyLog = {
-      id:              logId,
-      userId,
-      date,
-      entries:         [newEntry],
-      totalNutrition:  total,
-      waterMl:         newEntry.waterMl ?? 0,
-      goals,
-      completedGoals:  getCompletedGoals(total, goals),
-      updatedAt:       new Date(),
-    };
-    await setDoc(ref, { ...log, updatedAt: serverTimestamp() });
-  } else {
-    const data       = existing.data() as DailyLog;
-    const allEntries = [...(data.entries ?? []), newEntry];
-    const total      = sumNutrition(allEntries);
-    const waterMl    = ((data.waterMl ?? 0) as number) + (newEntry.waterMl ?? 0);
-    await updateDoc(ref, {
-      entries:        arrayUnion(newEntry),
+    if (!existing.exists()) {
+      const total = newEntry.nutrition;
+      const log: DailyLog = {
+        id:              logId,
+        userId,
+        date,
+        entries:         [newEntry],
+        totalNutrition:  total,
+        waterMl:         newEntry.waterMl ?? 0,
+        goals,
+        completedGoals:  getCompletedGoals(total, goals),
+        updatedAt:       new Date(),
+      };
+      transaction.set(ref, { ...log, updatedAt: serverTimestamp() });
+      return;
+    }
+
+    const data = existing.data() as DailyLog;
+    const previousEntries = data.entries ?? [];
+    const allEntries = previousEntries.some((item) => item.id === newEntry.id)
+      ? previousEntries
+      : [...previousEntries, newEntry];
+    const total = sumNutrition(allEntries);
+    const legacyWaterMl = Math.max(0, ((data.waterMl ?? 0) as number) - sumEntryWater(previousEntries));
+    const waterMl = legacyWaterMl + sumEntryWater(allEntries);
+
+    transaction.update(ref, {
+      entries:        allEntries,
       totalNutrition: total,
       waterMl,
+      goals,
       completedGoals: getCompletedGoals(total, goals),
       updatedAt:      serverTimestamp(),
     });
-  }
+  });
 
   return newEntry;
 }
@@ -154,22 +163,25 @@ export async function removeMealEntry(
 ): Promise<void> {
   const date  = formatDate(new Date());
   const ref   = doc(db, COLLECTIONS.dailyLogs, dailyLogId(userId, date));
-  const snap  = await getDoc(ref);
-  if (!snap.exists()) return;
+  await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(ref);
+    if (!snap.exists()) return;
 
-  const data       = snap.data() as DailyLog;
-  const previousEntries = data.entries ?? [];
-  const allEntries = previousEntries.filter((e) => e.id !== entry.id);
-  const total      = sumNutrition(allEntries);
-  const legacyWaterMl = Math.max(0, ((data.waterMl ?? 0) as number) - sumEntryWater(previousEntries));
-  const waterMl = legacyWaterMl + sumEntryWater(allEntries);
+    const data = snap.data() as DailyLog;
+    const previousEntries = data.entries ?? [];
+    const allEntries = previousEntries.filter((e) => e.id !== entry.id);
+    const total = sumNutrition(allEntries);
+    const legacyWaterMl = Math.max(0, ((data.waterMl ?? 0) as number) - sumEntryWater(previousEntries));
+    const waterMl = legacyWaterMl + sumEntryWater(allEntries);
 
-  await updateDoc(ref, {
-    entries:        allEntries,
-    totalNutrition: total,
-    waterMl,
-    completedGoals: getCompletedGoals(total, goals),
-    updatedAt:      serverTimestamp(),
+    transaction.update(ref, {
+      entries:        allEntries,
+      totalNutrition: total,
+      waterMl,
+      goals,
+      completedGoals: getCompletedGoals(total, goals),
+      updatedAt:      serverTimestamp(),
+    });
   });
 }
 
@@ -181,32 +193,38 @@ export async function addWaterIntake(
   const date = formatDate(new Date());
   const logId = dailyLogId(userId, date);
   const ref = doc(db, COLLECTIONS.dailyLogs, logId);
-  const snap = await getDoc(ref);
+  let nextWaterMl = amountMl;
 
-  if (!snap.exists()) {
-    const waterMl = amountMl;
-    const log: DailyLog = {
-      id: logId,
-      userId,
-      date,
-      entries: [],
-      totalNutrition: { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
-      waterMl,
+  await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(ref);
+
+    if (!snap.exists()) {
+      const log: DailyLog = {
+        id: logId,
+        userId,
+        date,
+        entries: [],
+        totalNutrition: { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
+        waterMl: amountMl,
+        goals,
+        completedGoals: [],
+        updatedAt: new Date(),
+      };
+      transaction.set(ref, { ...log, updatedAt: serverTimestamp() });
+      nextWaterMl = amountMl;
+      return;
+    }
+
+    const current = (snap.data().waterMl ?? 0) as number;
+    nextWaterMl = current + amountMl;
+    transaction.update(ref, {
+      waterMl: nextWaterMl,
       goals,
-      completedGoals: [],
-      updatedAt: new Date(),
-    };
-    await setDoc(ref, { ...log, updatedAt: serverTimestamp() });
-    return waterMl;
-  }
-
-  const current = (snap.data().waterMl ?? 0) as number;
-  const waterMl = current + amountMl;
-  await updateDoc(ref, {
-    waterMl,
-    updatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   });
-  return waterMl;
+
+  return nextWaterMl;
 }
 
 // ─── Saved Meals ─────────────────────────────────────────────────────────────
