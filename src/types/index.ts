@@ -116,6 +116,8 @@ export interface MealEntry {
   waterMl?: number;
   addedAt: Date;
   mealPeriod: MealPeriod;
+  mealGroupId?: string;
+  mealGroupLabel?: string;
   source: 'manual' | 'voice' | 'photo' | 'saved';
   savedMealId?: string;
 }
