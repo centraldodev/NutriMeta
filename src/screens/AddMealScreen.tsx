@@ -10,6 +10,7 @@ import { Colors, Typography, Spacing, Radius, Shadows } from '../constants/theme
 import { useStore, selectGoals, selectSavedMeals } from '../store';
 import { incrementMealUsage, removeMealEntry } from '../services/nutritionService';
 import { addCommunityPost } from '../services/groupService';
+import { WaterModal } from './HomeScreen';
 import { removePendingMealEntryByEntryId, saveMealEntryOrQueue, subscribePendingMealEntries } from '../services/pendingSyncService';
 import { analyzeMealPhoto, PhotoMealAiItem } from '../services/photoMealAiService';
 import { customFoodId, getCustomFoods, saveCustomFood } from '../services/customFoodService';
@@ -56,24 +57,163 @@ function getPreferredFoodUnit(food: FoodItem): QuantityUnit {
   return food.nutritionPer.porcao ? 'porcao' : food.defaultUnit;
 }
 
+const FOOD_MATCH_STOP_WORDS = new Set([
+  'com',
+  'sem',
+  'de',
+  'da',
+  'do',
+  'dos',
+  'das',
+  'tipo',
+  'var',
+  'mais',
+  'tambem',
+  'também',
+  'um',
+  'uma',
+  'dois',
+  'duas',
+  'tres',
+  'três',
+  'quatro',
+  'cinco',
+  'seis',
+  'sete',
+  'oito',
+  'nove',
+  'dez',
+  'colher',
+  'colheres',
+  'sopa',
+  'cha',
+  'chá',
+  'xicara',
+  'xícara',
+  'copo',
+  'garrafa',
+  'lata',
+  'concha',
+  'fatia',
+  'file',
+  'filé',
+  'bife',
+  'medio',
+  'médio',
+  'unidade',
+  'unidades',
+  'porcao',
+  'porção',
+  'grama',
+  'gramas',
+  'quilo',
+  'kg',
+  'ml',
+  'litro',
+  'litros',
+]);
+
+const FOOD_SYNONYMS: Record<string, string[]> = {
+  cafe: ['cafe', 'café', 'infusao', 'infusão'],
+  frances: ['frances', 'francês', 'trigo'],
+  branco: ['tipo', '1', 'branco'],
+  refri: ['refrigerante', 'cola', 'guarana', 'guaraná'],
+  coca: ['refrigerante', 'cola'],
+  frango: ['frango', 'galinha'],
+  carne: ['carne', 'bovina'],
+  leite: ['leite', 'vaca', 'integral'],
+};
+
+function normalizeFoodText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ç/g, 'c')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function foodTokens(value: string): string[] {
+  return normalizeFoodText(value)
+    .split(' ')
+    .filter((token) => token.length > 1 && !FOOD_MATCH_STOP_WORDS.has(token));
+}
+
+function expandFoodTokens(tokens: string[]): Set<string> {
+  const expanded = new Set(tokens);
+  tokens.forEach((token) => {
+    FOOD_SYNONYMS[token]?.forEach((synonym) => expanded.add(normalizeFoodText(synonym)));
+  });
+  return expanded;
+}
+
+function foodSearchText(food: FoodItem) {
+  return [food.name, ...(food.aliases ?? [])].join(' ');
+}
+
+function foodMatchScore(query: string, food: FoodItem): number {
+  const queryTokens = expandFoodTokens(foodTokens(query));
+  if (queryTokens.size === 0) return 0;
+
+  const foodText = normalizeFoodText(foodSearchText(food));
+  const targetTokens = expandFoodTokens(foodTokens(foodText));
+  const exactText = normalizeFoodText(query);
+
+  if (foodText === exactText || food.aliases.some((alias) => normalizeFoodText(alias) === exactText)) {
+    return 100;
+  }
+  if (foodText.includes(exactText) && exactText.length >= 4) {
+    return 80 + Math.min(10, exactText.length / 4);
+  }
+
+  let matches = 0;
+  queryTokens.forEach((token) => {
+    if (targetTokens.has(token)) matches += 1;
+  });
+
+  const coverage = matches / queryTokens.size;
+  const extraPenalty = Math.max(0, targetTokens.size - matches) * 0.35;
+  const preferredBonus =
+    (queryTokens.has('cozido') && targetTokens.has('cozido') ? 4 : 0) +
+    (queryTokens.has('cru') && targetTokens.has('cru') ? 4 : 0) +
+    (queryTokens.has('assado') && targetTokens.has('assado') ? 4 : 0) +
+    (queryTokens.has('grelhado') && targetTokens.has('grelhado') ? 4 : 0);
+
+  return coverage * 70 + matches * 5 + preferredBonus - extraPenalty;
+}
+
+function findBestFood(query: string, customFoods: FoodItem[] = [], minScore = 30): FoodItem | undefined {
+  const normalized = normalizeFoodText(query);
+  if (!normalized) return undefined;
+
+  const ranked = customFoods
+    .map((food) => ({ food, score: foodMatchScore(query, food) }))
+    .filter((item) => item.score >= minScore)
+    .sort((a, b) => b.score - a.score || a.food.name.length - b.food.name.length);
+
+  return ranked[0]?.food;
+}
+
 function findAnyFood(query: string, customFoods: FoodItem[] = []): FoodItem | undefined {
-  const normalized = query.trim().toLowerCase();
+  const normalized = normalizeFoodText(query);
   if (!normalized) return undefined;
   return customFoods.find((food) =>
-    food.name.toLowerCase() === normalized ||
-    food.aliases.some((alias) => alias.toLowerCase() === normalized)
-  );
+    normalizeFoodText(food.name) === normalized ||
+    food.aliases.some((alias) => normalizeFoodText(alias) === normalized)
+  ) ?? findBestFood(query, customFoods);
 }
 
 function searchFoods(query: string, customFoods: FoodItem[] = []): FoodItem[] {
-  const customMatches = customFoods.filter((food) => {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return food.name.toLowerCase().includes(q) ||
-      food.aliases.some((alias) => alias.toLowerCase().includes(q));
-  });
+  const q = query.trim();
+  if (!q) return customFoods;
 
-  return customMatches;
+  return customFoods
+    .map((food) => ({ food, score: foodMatchScore(q, food) }))
+    .filter((item) => item.score >= 25)
+    .sort((a, b) => b.score - a.score || a.food.name.length - b.food.name.length)
+    .map((item) => item.food);
 }
 
 function isWaterFood(food: Pick<FoodItem, 'name' | 'aliases'> | null): boolean {
@@ -240,10 +380,19 @@ function parseVoiceQuantity(segment: string, food: FoodItem): { quantity: number
 }
 
 function splitVoiceText(rawText: string, customFoods: FoodItem[] = []): string[] {
-  const base = rawText
-    .replace(/\s+(?:e|mais|com|tamb[eé]m)\s+/gi, ',')
+  const normalized = rawText
+    .replace(/\bcafe com leite\b/gi, 'cafe_com_leite')
+    .replace(/\bcafé com leite\b/gi, 'cafe_com_leite')
+    .replace(/\barroz com feij[aã]o\b/gi, 'arroz_com_feijao');
+
+  const base = normalized
+    .replace(/\s+(?:e|mais|tamb[eé]m)\s+/gi, ',')
     .split(/[,;]/)
     .map(cleanVoiceSegment)
+    .map((segment) => segment
+      .replace(/cafe_com_leite/gi, 'café com leite')
+      .replace(/arroz_com_feijao/gi, 'arroz com feijão')
+    )
     .filter(Boolean);
 
   if (base.length > 1) return base;
@@ -271,7 +420,10 @@ function splitVoiceText(rawText: string, customFoods: FoodItem[] = []): string[]
 
 function parseVoiceMeal(rawText: string, customFoods: FoodItem[] = []): MealDraft[] {
   return splitVoiceText(rawText, customFoods).flatMap((segment, index): MealDraft[] => {
-    const food = findAnyFood(segment, customFoods);
+    const composite = expandCompositeVoiceSegment(segment, customFoods, index);
+    if (composite.length > 0) return composite;
+
+    const food = findBestFood(segment, customFoods, 24) ?? findAnyFood(segment, customFoods);
     const parsed = food ? parseVoiceQuantity(segment, food) : parseQuantityFromText(segment);
     const quantity = parsed.quantity > 0 ? parsed.quantity : 1;
     if (!food) {
@@ -287,7 +439,7 @@ function parseVoiceMeal(rawText: string, customFoods: FoodItem[] = []): MealDraf
         resolving: false,
       }];
     }
-    const unit = food.nutritionPer[parsed.unit] ? parsed.unit : food.defaultUnit;
+    const unit = compatibleDetectedUnit(food, parsed.unit);
     return [{
       key: `${food.id}_${index}_${quantity}_${unit}`,
       food,
@@ -299,6 +451,44 @@ function parseVoiceMeal(rawText: string, customFoods: FoodItem[] = []): MealDraf
       sourceNote: `Falado: ${segment}`,
     }];
   });
+}
+
+function expandCompositeVoiceSegment(segment: string, customFoods: FoodItem[], index: number): MealDraft[] {
+  const normalized = normalizeFoodText(segment);
+  const parts: { term: string; quantity: number; unit?: QuantityUnit }[] = [];
+
+  if (normalized.includes('cafe com leite')) {
+    parts.push(
+      { term: 'café', quantity: 1, unit: 'porcao' },
+      { term: 'leite', quantity: 50, unit: 'mililitro' }
+    );
+  } else if (normalized.includes('arroz com feijao')) {
+    parts.push(
+      { term: 'arroz cozido', quantity: 1, unit: 'porcao' },
+      { term: 'feijão cozido', quantity: 1, unit: 'porcao' }
+    );
+  }
+
+  return parts.flatMap((part, partIndex): MealDraft[] => {
+    const food = findBestFood(part.term, customFoods, 24) ?? findAnyFood(part.term, customFoods);
+    if (!food) return [];
+    const unit = compatibleDetectedUnit(food, part.unit ?? food.defaultUnit);
+    return [{
+      key: `${food.id}_${index}_${partIndex}_${part.quantity}_${unit}`,
+      food,
+      foodText: food.name,
+      foodFound: true,
+      quantity: part.quantity,
+      unit,
+      nutrition: calculateNutrition(food, part.quantity, unit),
+      sourceNote: `Falado: ${segment}`,
+    }];
+  });
+}
+
+function compatibleDetectedUnit(food: FoodItem, detectedUnit: QuantityUnit): QuantityUnit {
+  if (food.nutritionPer[detectedUnit]) return detectedUnit;
+  return getPreferredFoodUnit(food);
 }
 
 function emptyNutrition(): ReturnType<typeof calculateNutrition> {
@@ -1004,11 +1194,11 @@ function VoiceModal({
 
   function updateDraftFood(key: string, value: string) {
     updateDraft(key, (item) => {
-      const found = findAnyFood(value, customFoods);
+      const found = findBestFood(value, customFoods, 24) ?? findAnyFood(value, customFoods);
       if (!found) {
         return { ...item, foodText: value, foodFound: false, resolveFailed: false };
       }
-      const unit = found.nutritionPer[item.unit] ? item.unit : found.defaultUnit;
+      const unit = compatibleDetectedUnit(found, item.unit);
       return recalcMealDraft(item, {
         food: found,
         foodText: value,
@@ -1240,11 +1430,12 @@ export function PhotoModal({
       const result = await analyzeMealPhoto(base64, mimeType);
       setSummary(result.summary ?? '');
       const drafts = result.items.map((item, index) => {
-        const foundFood = findAnyFood(item.foodName, customFoods);
+        const foundFood = findBestFood(item.foodName, customFoods, 24) ?? findAnyFood(item.foodName, customFoods);
         const food = foundFood ?? createAiFood(item, index);
-        const unit = food && food.nutritionPer[item.unit] ? item.unit : food?.defaultUnit ?? item.unit;
+        const unit = food ? compatibleDetectedUnit(food, item.unit) : item.unit;
         const quantity = item.quantity > 0 ? item.quantity : 1;
         const isAiCreated = !foundFood && Boolean(food);
+        const linkedToBase = Boolean(foundFood);
         return {
           key: `photo_${index}_${item.foodName}_${quantity}_${unit}`,
           food,
@@ -1254,10 +1445,10 @@ export function PhotoModal({
           unit,
           nutrition: food ? calculateNutrition(food, quantity, unit) : emptyNutrition(),
           sourceNote: item.notes
-            ? `IA: ${item.notes}${isAiCreated ? ' · alimento cadastrado por estimativa' : ''}${item.confidence != null ? ` · confiança ${Math.round(item.confidence * 100)}%` : ''}`
+            ? `IA: ${item.notes}${linkedToBase ? ` · vinculado à base como ${food?.name}` : ''}${isAiCreated ? ' · alimento cadastrado por estimativa' : ''}${item.confidence != null ? ` · confiança ${Math.round(item.confidence * 100)}%` : ''}`
             : item.confidence != null
-              ? `IA: ${isAiCreated ? 'alimento cadastrado por estimativa · ' : ''}confiança ${Math.round(item.confidence * 100)}%`
-              : isAiCreated ? 'IA: alimento cadastrado por estimativa nutricional' : undefined,
+              ? `IA: ${linkedToBase ? `vinculado à base · ` : ''}${isAiCreated ? 'alimento cadastrado por estimativa · ' : ''}confiança ${Math.round(item.confidence * 100)}%`
+              : linkedToBase ? `IA: vinculado à base como ${food?.name}` : isAiCreated ? 'IA: alimento cadastrado por estimativa nutricional' : undefined,
         };
       });
       setEditableDrafts(drafts);
@@ -1304,11 +1495,11 @@ export function PhotoModal({
 
   function updateDraftFood(key: string, value: string) {
     updateDraft(key, (item) => {
-      const found = findAnyFood(value, customFoods);
+      const found = findBestFood(value, customFoods, 24) ?? findAnyFood(value, customFoods);
       if (!found) {
         return { ...item, food: null, foodText: value, foodFound: false, resolveFailed: false, nutrition: emptyNutrition() };
       }
-      const unit = found.nutritionPer[item.unit] ? item.unit : found.defaultUnit;
+      const unit = compatibleDetectedUnit(found, item.unit);
       return recalcMealDraft(item, {
         food: found,
         foodText: value,
@@ -1521,9 +1712,17 @@ function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete: () => voi
 export function AddMealScreen({
   onMealAdded,
   fabBottomOffset = Spacing.base,
+  waterOpen = false,
+  onWaterOpen,
+  onWaterClose,
+  onAddWater,
 }: {
   onMealAdded?: () => void;
   fabBottomOffset?: number;
+  waterOpen?: boolean;
+  onWaterOpen?: () => void;
+  onWaterClose?: () => void;
+  onAddWater?: (amountMl: number) => void;
 }) {
   const todayLog   = useStore((s) => s.todayLog);
   const savedMeals = useStore(selectSavedMeals);
@@ -1900,6 +2099,9 @@ export function AddMealScreen({
       </ScrollView>
 
       <View style={[styles.fabDock, Platform.OS === 'web' && styles.fabDockFixed, { bottom: fabBottomOffset }]}>
+        <TouchableOpacity style={[styles.mealFab, styles.waterFab]} onPress={onWaterOpen}>
+          <MaterialIcons name="local-drink" size={23} color={Colors.white} />
+        </TouchableOpacity>
         <TouchableOpacity style={[styles.mealFab, styles.manualFab]} onPress={() => setAddModal(true)}>
           <MaterialIcons name="edit-note" size={24} color={Colors.white} />
         </TouchableOpacity>
@@ -1914,6 +2116,9 @@ export function AddMealScreen({
       <AddMealModal visible={addModal} onClose={() => setAddModal(false)} onAdded={handleMealAdded} customFoods={customFoods} onCreateFood={handleCreateFood} />
       <VoiceModal   visible={voiceModal} onClose={() => setVoiceModal(false)} onConfirm={handleVoiceConfirm} customFoods={customFoods} onCreateFood={handleCreateFood} />
       <PhotoModal   visible={photoModal} onClose={() => setPhotoModal(false)} onConfirm={handlePhotoConfirm} customFoods={customFoods} />
+      {onAddWater && onWaterClose ? (
+        <WaterModal visible={waterOpen} onClose={onWaterClose} onAdd={onAddWater} />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -1948,6 +2153,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     ...Shadows.md,
   },
+  waterFab: { backgroundColor: Colors.info, borderColor: Colors.info },
   manualFab: { backgroundColor: Colors.green400, borderColor: Colors.green400 },
   voiceFab: { backgroundColor: Colors.purpleL, borderColor: Colors.purple },
   photoFab: { backgroundColor: Colors.green50, borderColor: Colors.green400 },

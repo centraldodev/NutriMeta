@@ -26,17 +26,12 @@ const MAIN_TAB_BAR_HEIGHT = 70;
 const WEB_FIXED_TAB_BAR_STYLE = Platform.OS === 'web'
   ? ({ position: 'fixed', left: 0, right: 0, marginLeft: 'auto', marginRight: 'auto' } as any)
   : null;
-const WEB_FIXED_WATER_FAB_STYLE = Platform.OS === 'web'
-  ? ({ position: 'fixed' } as any)
-  : null;
-
 function MainTabs() {
   const [tab, setTab] = useState<MainTab>('home');
   const [waterOpen, setWaterOpen] = useState(false);
   const insets = useSafeAreaInsets();
   const tabBarBottom = Platform.OS === 'web' ? 0 : insets.bottom;
-  const waterFabBottom = tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm;
-  const screenFabBottom = Platform.OS === 'web' ? waterFabBottom : Spacing.base;
+  const screenFabBottom = Platform.OS === 'web' ? tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm : Spacing.base;
 
   const tabs = useMemo(
     () => [
@@ -78,20 +73,20 @@ function MainTabs() {
   return (
     <View style={styles.appShell}>
       <View style={[styles.content, { paddingBottom: tabBarBottom + MAIN_TAB_BAR_HEIGHT + Spacing.sm }]}>
-        {tab === 'home' && <HomeScreen waterOpen={waterOpen} onWaterClose={() => setWaterOpen(false)} onAddWater={handleAddWater} />}
-        {tab === 'addMeal' && <AddMealScreen onMealAdded={() => setTab('analysis')} fabBottomOffset={screenFabBottom} />}
+        {tab === 'home' && <HomeScreen />}
+        {tab === 'addMeal' && (
+          <AddMealScreen
+            onMealAdded={() => setTab('analysis')}
+            fabBottomOffset={screenFabBottom}
+            waterOpen={waterOpen}
+            onWaterOpen={() => setWaterOpen(true)}
+            onWaterClose={() => setWaterOpen(false)}
+            onAddWater={handleAddWater}
+          />
+        )}
         {tab === 'analysis' && <AnalysisScreen />}
         {tab === 'ranking' && <RankingScreen fabBottomOffset={screenFabBottom} />}
       </View>
-
-      {tab === 'home' && (
-        <TouchableOpacity
-          style={[styles.waterFab, WEB_FIXED_WATER_FAB_STYLE, { bottom: waterFabBottom }]}
-          onPress={() => setWaterOpen(true)}
-        >
-          <MaterialIcons name="local-drink" size={28} color={Colors.white} />
-        </TouchableOpacity>
-      )}
 
       <View style={[styles.tabBar, WEB_FIXED_TAB_BAR_STYLE, { bottom: tabBarBottom }]}>
         {tabs.map((item) => {
@@ -101,7 +96,7 @@ function MainTabs() {
               key={item.key}
               style={[styles.tabButton, active && styles.tabButtonActive]}
               onPress={() => {
-                if (item.key !== 'home') setWaterOpen(false);
+                if (item.key !== 'addMeal') setWaterOpen(false);
                 setTab(item.key);
               }}
             >
@@ -397,19 +392,5 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: Colors.green600,
-  },
-  waterFab: {
-    position: 'absolute',
-    right: Spacing.lg,
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: Colors.info,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 10,
-    ...(Platform.OS === 'web'
-      ? { boxShadow: '0px 4px 8px rgba(0, 0, 0, 0.1)' }
-      : Shadows.md),
   },
 });

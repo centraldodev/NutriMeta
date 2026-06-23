@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
-  ActivityIndicator,
   Image,
   Linking,
   Modal,
@@ -21,7 +20,6 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
 import { isFirebaseConfigured } from '../config';
 import { saveUserProfile, signOut } from '../services/authService';
-import { refineDietGoals } from '../services/goalAiService';
 import { respondNutritionistInvite, subscribePatientAcceptedNutritionistLinks, subscribePatientNutritionistInvites } from '../services/nutritionistLinkService';
 import { subscribeUnreadChatCountByLink } from '../services/nutritionistChatService';
 import { subscribePatientFoodPlans } from '../services/nutritionistService';
@@ -29,7 +27,6 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { NutritionistChatModal } from '../components/NutritionistChatModal';
 import { useStore, selectGoals, selectNotifications, selectTodayLog, selectUnreadCount } from '../store';
 import { calcMacroGoals, formatBrasiliaDate, formatKcal, formatGrams, formatNutritionDetails, getBrasiliaHour, macroPercent } from '../utils/nutrition';
-import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
 import {
   buildValidatedProfileValues,
   formatHeightInput,
@@ -263,8 +260,6 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
     sodium: '',
   });
   const [saving, setSaving] = useState(false);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiReason, setAiReason] = useState('');
 
   useEffect(() => {
     if (!visible) return;
@@ -287,8 +282,6 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
       sugar: String(activeGoals.sugar),
       sodium: String(activeGoals.sodium),
     });
-    setAiReason('');
-    setAiLoading(false);
   }, [visible, goals, profile, user]);
 
   function updateGoalInput(key: keyof MacroGoals, value: string) {
@@ -342,48 +335,6 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
       sugar: String(calculated.sugar),
       sodium: String(calculated.sodium),
     });
-    setAiReason('');
-  }
-
-  async function handleRefineGoalsWithAi() {
-    const nextProfile = buildProfile();
-    if (!nextProfile) return;
-
-    const baseGoals: MacroGoals = {
-      kcal: Math.round(parseNumber(goalInputs.kcal, DEFAULT_GOALS.kcal)),
-      protein: Math.round(parseNumber(goalInputs.protein, DEFAULT_GOALS.protein)),
-      carbs: Math.round(parseNumber(goalInputs.carbs, DEFAULT_GOALS.carbs)),
-      fat: Math.round(parseNumber(goalInputs.fat, DEFAULT_GOALS.fat)),
-      fiber: Math.round(parseNumber(goalInputs.fiber, DEFAULT_GOALS.fiber)),
-      water: Math.round(parseNumber(goalInputs.water, DEFAULT_GOALS.water)),
-      sugar: Math.round(parseNumber(goalInputs.sugar, DEFAULT_GOALS.sugar)),
-      sodium: Math.round(parseNumber(goalInputs.sodium, DEFAULT_GOALS.sodium)),
-    };
-
-    setAiLoading(true);
-    try {
-      const recommendation = await refineDietGoals(nextProfile, baseGoals);
-      setGoalInputs({
-        kcal: String(recommendation.goals.kcal),
-        protein: String(recommendation.goals.protein),
-        carbs: String(recommendation.goals.carbs),
-        fat: String(recommendation.goals.fat),
-        fiber: String(recommendation.goals.fiber),
-        water: String(recommendation.goals.water),
-        sugar: String(recommendation.goals.sugar),
-        sodium: String(recommendation.goals.sodium),
-      });
-      setAiReason(recommendation.rationale);
-    } catch (e) {
-      console.warn('AI goal refinement failed', e);
-      if (isAiLimitError(e)) {
-        Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
-        return;
-      }
-      Alert.alert('IA indisponível', 'Não consegui refinar suas metas agora. As metas calculadas continuam disponíveis.');
-    } finally {
-      setAiLoading(false);
-    }
   }
 
   async function handlePickPhoto() {
@@ -534,21 +485,11 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
                 <Text style={modalStyles.sectionHint}>Edite manualmente ou recalcule pelos dados acima.</Text>
               </View>
               <View style={modalStyles.goalActionRow}>
-                <TouchableOpacity style={modalStyles.recalcBtn} onPress={handleRecalculateGoals} disabled={aiLoading}>
+                <TouchableOpacity style={modalStyles.recalcBtn} onPress={handleRecalculateGoals}>
                   <Text style={modalStyles.recalcText}>Recalcular</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[modalStyles.aiBtn, aiLoading && modalStyles.btnDisabled]} onPress={handleRefineGoalsWithAi} disabled={aiLoading}>
-                  {aiLoading ? <ActivityIndicator size="small" color={Colors.white} /> : <Text style={modalStyles.aiText}>Refinar com IA</Text>}
                 </TouchableOpacity>
               </View>
             </View>
-
-            {aiReason ? (
-              <View style={modalStyles.aiReasonBox}>
-                <Text style={modalStyles.aiReasonTitle}>Sugestão da IA</Text>
-                <Text style={modalStyles.aiReasonText}>{aiReason}</Text>
-              </View>
-            ) : null}
 
             <View style={modalStyles.fieldGrid}>
               <Field label="Calorias" value={goalInputs.kcal} onChangeText={(v) => updateGoalInput('kcal', v)} keyboardType="numeric" suffix="kcal" />
@@ -781,7 +722,7 @@ function ChatsModal({
   );
 }
 
-function WaterModal({
+export function WaterModal({
   visible,
   onClose,
   onAdd,
@@ -824,19 +765,10 @@ function WaterModal({
   );
 }
 
-export function HomeScreen({
-  waterOpen,
-  onWaterClose,
-  onAddWater,
-}: {
-  waterOpen: boolean;
-  onWaterClose: () => void;
-  onAddWater: (amountMl: number) => void;
-}) {
+export function HomeScreen() {
   const user = useStore((s) => s.user);
   const profile = useStore((s) => s.profile);
   const clearAuth = useStore((s) => s.clearAuth);
-  const addWater = useStore((s) => s.addWater);
   const todayLog = useStore(selectTodayLog);
   const goals = useStore(selectGoals);
   const unreadCount = useStore(selectUnreadCount);
@@ -1058,7 +990,6 @@ export function HomeScreen({
         currentUserName={profile?.name ?? user?.name ?? 'Paciente'}
         onClose={() => setChatLink(null)}
       />
-      <WaterModal visible={waterOpen} onClose={onWaterClose} onAdd={onAddWater} />
     </SafeAreaView>
   );
 }
@@ -1260,12 +1191,6 @@ const modalStyles = StyleSheet.create({
   goalActionRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: Spacing.xs, flex: 1 },
   recalcBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green400 },
   recalcText: { color: Colors.green600, fontWeight: Typography.bold, fontSize: Typography.sm },
-  aiBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.green600, minWidth: 112, alignItems: 'center' },
-  aiText: { color: Colors.white, fontWeight: Typography.bold, fontSize: Typography.sm },
-  btnDisabled: { opacity: 0.6 },
-  aiReasonBox: { backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green100, borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.md },
-  aiReasonTitle: { fontSize: Typography.xs, color: Colors.green600, fontWeight: Typography.bold, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 3 },
-  aiReasonText: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 19 },
   actions: { flexDirection: 'row', gap: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
   cancelBtn: { flex: 1, alignItems: 'center', paddingVertical: Spacing.md, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
   cancelText: { color: Colors.gray600, fontWeight: Typography.semibold },
