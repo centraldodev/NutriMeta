@@ -103,6 +103,11 @@ export interface FoodItem {
   aliases: string[];                             // for voice/text matching
   nutritionPer: Partial<Record<QuantityUnit, FoodNutrition>>;
   defaultUnit: QuantityUnit;
+  source?: string;
+  category?: string;
+  portionReference?: string;
+  ingredients?: { nome: string; quantidade_g?: number }[];
+  originalData?: Record<string, unknown>;
 }
 
 export interface MealEntry {

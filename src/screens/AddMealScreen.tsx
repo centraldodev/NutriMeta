@@ -23,7 +23,7 @@ import {
 } from '../constants/foodDatabase';
 import { FoodItem, FoodNutrition, MealEntry, MealPeriod, QuantityUnit } from '../types';
 import { formatBrasiliaTime, formatNutritionDetails, generateId, formatDate, getBrasiliaHour, sumNutrition } from '../utils/nutrition';
-import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
+import { isAiLimitError, showAiLimitAlert } from '../utils/aiErrors';
 import { isFirebaseConfigured } from '../config';
 
 declare const require: (name: string) => any;
@@ -203,6 +203,15 @@ function findAnyFood(query: string, customFoods: FoodItem[] = []): FoodItem | un
     normalizeFoodText(food.name) === normalized ||
     food.aliases.some((alias) => normalizeFoodText(alias) === normalized)
   ) ?? findBestFood(query, customFoods);
+}
+
+function findExactFood(query: string, customFoods: FoodItem[] = []): FoodItem | undefined {
+  const normalized = normalizeFoodText(query);
+  if (!normalized) return undefined;
+  return customFoods.find((food) =>
+    normalizeFoodText(food.name) === normalized ||
+    food.aliases.some((alias) => normalizeFoodText(alias) === normalized)
+  );
 }
 
 function searchFoods(query: string, customFoods: FoodItem[] = []): FoodItem[] {
@@ -435,7 +444,7 @@ function parseVoiceMeal(rawText: string, customFoods: FoodItem[] = []): MealDraf
         quantity,
         unit: parsed.unit,
         nutrition: emptyNutrition(),
-        sourceNote: 'IA vai cadastrar este alimento na base compartilhada.',
+        sourceNote: 'IA vai cadastrar este alimento nos seus alimentos.',
         resolving: false,
       }];
     }
@@ -499,12 +508,19 @@ function normalizeAiFoodName(name: string) {
   return name.trim().replace(/\s+/g, ' ');
 }
 
+function markAiFood(food: FoodItem): FoodItem {
+  return {
+    ...food,
+    source: food.source ?? 'ai',
+  };
+}
+
 function createAiFood(item: PhotoMealAiItem, index: number): FoodItem | null {
   const nutrition = item.nutritionPerUnit;
   const name = normalizeAiFoodName(item.foodName);
   if (!name || !nutrition || nutrition.kcal <= 0) return null;
 
-  return {
+  return markAiFood({
     id: customFoodId(name),
     name,
     emoji: item.emoji?.trim() || '🍽️',
@@ -513,7 +529,7 @@ function createAiFood(item: PhotoMealAiItem, index: number): FoodItem | null {
     nutritionPer: {
       [item.unit]: nutrition,
     },
-  };
+  });
 }
 
 function createLocalEntry(userId: string, payload: MealEntryPayload): MealEntry {
@@ -587,6 +603,7 @@ function AddMealModal({
   const [mealPeriod, setMealPeriod] = useState<MealPeriod>(getDefaultMealPeriod());
 
   const suggestions = React.useMemo(() => searchFoods(foodQuery, customFoods), [customFoods, foodQuery]);
+  const exactFoodMatch = React.useMemo(() => findExactFood(foodQuery, customFoods), [customFoods, foodQuery]);
   const availableUnits = React.useMemo(() => getFoodUnits(foodItem), [foodItem]);
   const frequentFoods = React.useMemo(() => {
     const counts = new Map<string, { food: FoodItem; count: number }>();
@@ -692,7 +709,7 @@ function AddMealModal({
     } catch (error) {
       console.warn('AI food creation failed', error);
       if (isAiLimitError(error)) {
-        Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
+        showAiLimitAlert();
         return;
       }
       Alert.alert('Alimento não encontrado', 'Não consegui cadastrar este alimento automaticamente agora. Tente outro nome ou seja mais específico.');
@@ -711,7 +728,7 @@ function AddMealModal({
         itemsToSave = [selectionFromFood(food)];
       } catch (error) {
         console.warn('AI food creation failed', error);
-        if (isAiLimitError(error)) Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
+        if (isAiLimitError(error)) showAiLimitAlert();
         else Alert.alert('Alimento não encontrado', 'Não consegui cadastrar este alimento automaticamente agora. Tente outro nome ou seja mais específico.');
         setSaving(false);
         return;
@@ -774,6 +791,7 @@ function AddMealModal({
   }
 
   const isEmpty = !foodQuery.trim();
+  const canCreateWithAi = !isEmpty && !exactFoodMatch;
   const selectedTotal = React.useMemo(
     () => sumNutrition(selectedFoods.map((item) => ({ nutrition: item.nutrition }))),
     [selectedFoods]
@@ -855,14 +873,14 @@ function AddMealModal({
                     </TouchableOpacity>
                   );
                 })}
-                {suggestions.length === 0 && !isEmpty && (
+                {canCreateWithAi && (
                   <TouchableOpacity style={modal.aiCreateOption} onPress={handleSelectCurrentFood} disabled={selecting || saving}>
                     <View style={modal.aiIcon}>
                       {selecting ? <ActivityIndicator color={Colors.green600} /> : <MaterialIcons name="auto-awesome" size={20} color={Colors.green600} />}
                     </View>
                     <View style={modal.foodInfo}>
                       <Text style={modal.aiCreateTitle}>Cadastrar "{foodQuery.trim()}" com IA</Text>
-                      <Text style={modal.aiCreateText}>Vou buscar referências públicas de rótulo/tabela e salvar na base.</Text>
+                      <Text style={modal.aiCreateText}>Vou estimar os nutrientes e salvar nos seus alimentos.</Text>
                     </View>
                   </TouchableOpacity>
                 )}
@@ -1069,50 +1087,54 @@ function VoiceModal({
     setEditableDrafts(parseVoiceMeal(transcript, customFoods));
   }, [customFoods, transcript]);
 
+  async function resolveDraftWithAi(item: MealDraft) {
+    setEditableDrafts((items) => items.map((draft) =>
+      draft.key === item.key
+        ? { ...draft, resolving: true, resolveFailed: false, sourceNote: 'Cadastrando alimento com IA...' }
+        : draft
+    ));
+
+    try {
+      const food = await onCreateFood(item.foodText, item.unit);
+      setEditableDrafts((items) => items.map((draft) => {
+        if (draft.key !== item.key) return draft;
+        const unit = food.nutritionPer[draft.unit] ? draft.unit : food.defaultUnit;
+        return recalcMealDraft({
+          ...draft,
+          food,
+          foodText: food.name,
+          foodFound: true,
+          resolving: false,
+          resolveFailed: false,
+          sourceNote: 'IA cadastrou este alimento nos seus alimentos.',
+        }, { unit });
+      }));
+    } catch (error) {
+      console.warn('Voice AI food creation failed', error);
+      if (isAiLimitError(error)) {
+        showAiLimitAlert();
+      }
+      setEditableDrafts((items) => items.map((draft) =>
+        draft.key === item.key
+          ? {
+              ...draft,
+              resolving: false,
+              resolveFailed: true,
+              sourceNote: isAiLimitError(error)
+                ? 'Limite de IA atingido. Revise o alimento manualmente.'
+                : 'Não consegui cadastrar este alimento automaticamente.',
+            }
+          : draft
+      ));
+    }
+  }
+
   React.useEffect(() => {
     const missing = editableDrafts.filter((item) => !item.food && !item.resolving && !item.resolveFailed);
     if (missing.length === 0) return;
 
     missing.forEach((item) => {
-      setEditableDrafts((items) => items.map((draft) =>
-        draft.key === item.key
-          ? { ...draft, resolving: true, sourceNote: 'Cadastrando alimento com IA...' }
-          : draft
-      ));
-
-      onCreateFood(item.foodText, item.unit)
-        .then((food) => {
-          setEditableDrafts((items) => items.map((draft) => {
-            if (draft.key !== item.key) return draft;
-            const unit = food.nutritionPer[draft.unit] ? draft.unit : food.defaultUnit;
-            return recalcMealDraft({
-              ...draft,
-              food,
-              foodText: food.name,
-              foodFound: true,
-              resolving: false,
-              sourceNote: 'IA cadastrou este alimento na base compartilhada.',
-            }, { unit });
-          }));
-        })
-        .catch((error) => {
-          console.warn('Voice AI food creation failed', error);
-          if (isAiLimitError(error)) {
-            Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
-          }
-          setEditableDrafts((items) => items.map((draft) =>
-            draft.key === item.key
-              ? {
-                  ...draft,
-                  resolving: false,
-                  resolveFailed: true,
-                  sourceNote: isAiLimitError(error)
-                    ? 'Limite de IA atingido. Revise o alimento manualmente.'
-                    : 'Não consegui cadastrar este alimento automaticamente.',
-                }
-              : draft
-          ));
-        });
+      void resolveDraftWithAi(item);
     });
   }, [editableDrafts, onCreateFood]);
 
@@ -1278,6 +1300,12 @@ function VoiceModal({
                           placeholderTextColor={Colors.gray400}
                         />
                         {!item.foodFound && <Text style={voiceModal.errorText}>{item.resolving ? 'Cadastrando com IA...' : 'Alimento ainda sem cadastro.'}</Text>}
+                        {!item.foodFound && !item.resolving && (
+                          <TouchableOpacity style={voiceModal.aiCreateBtn} onPress={() => resolveDraftWithAi(item)}>
+                            <MaterialIcons name="auto-awesome" size={15} color={Colors.green600} />
+                            <Text style={voiceModal.aiCreateText}>Cadastrar com IA</Text>
+                          </TouchableOpacity>
+                        )}
                       </View>
                       <TouchableOpacity style={voiceModal.removeBtn} onPress={() => removeDraft(item.key)}>
                         <MaterialIcons name="close" size={18} color={Colors.gray600} />
@@ -1351,12 +1379,13 @@ function VoiceModal({
 // ─── Photo Modal ──────────────────────────────────────────────────────────────
 
 export function PhotoModal({
-  visible, onClose, onConfirm, customFoods, allowPhotoOnlyPost = false,
+  visible, onClose, onConfirm, customFoods, onCreateFood, allowPhotoOnlyPost = false,
 }: {
   visible: boolean;
   onClose: () => void;
   onConfirm: (items: MealDraft[], mealPeriod: MealPeriod, photo?: { imageUri: string; mimeType?: string; summary: string; caption: string }) => Promise<void> | void;
   customFoods: FoodItem[];
+  onCreateFood?: (foodName: string, preferredUnit: QuantityUnit) => Promise<FoodItem>;
   allowPhotoOnlyPost?: boolean;
 }) {
   const [imageUri, setImageUri] = useState<string | null>(null);
@@ -1458,7 +1487,7 @@ export function PhotoModal({
     } catch (e) {
       console.warn('Photo meal analysis failed', e);
       if (isAiLimitError(e)) {
-        Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
+        showAiLimitAlert();
         return;
       }
       Alert.alert('Erro ao analisar foto', 'Não consegui identificar o prato agora. Tente novamente ou use a entrada manual.');
@@ -1491,6 +1520,49 @@ export function PhotoModal({
 
   function removeDraft(key: string) {
     setEditableDrafts((items) => items.filter((item) => item.key !== key));
+  }
+
+  async function resolveDraftWithAi(item: MealDraft) {
+    if (!onCreateFood) return;
+    setEditableDrafts((items) => items.map((draft) =>
+      draft.key === item.key
+        ? { ...draft, resolving: true, resolveFailed: false, sourceNote: 'Cadastrando alimento com IA...' }
+        : draft
+    ));
+
+    try {
+      const food = await onCreateFood(item.foodText, item.unit);
+      setEditableDrafts((items) => items.map((draft) => {
+        if (draft.key !== item.key) return draft;
+        const unit = food.nutritionPer[draft.unit] ? draft.unit : food.defaultUnit;
+        return recalcMealDraft({
+          ...draft,
+          food,
+          foodText: food.name,
+          foodFound: true,
+          resolving: false,
+          resolveFailed: false,
+          sourceNote: 'IA cadastrou este alimento nos seus alimentos.',
+        }, { unit });
+      }));
+    } catch (error) {
+      console.warn('Photo AI food creation failed', error);
+      if (isAiLimitError(error)) {
+        showAiLimitAlert();
+      }
+      setEditableDrafts((items) => items.map((draft) =>
+        draft.key === item.key
+          ? {
+              ...draft,
+              resolving: false,
+              resolveFailed: true,
+              sourceNote: isAiLimitError(error)
+                ? 'Limite de IA atingido. Revise o alimento manualmente.'
+                : 'Não consegui cadastrar este alimento automaticamente.',
+            }
+          : draft
+      ));
+    }
   }
 
   function updateDraftFood(key: string, value: string) {
@@ -1609,7 +1681,13 @@ export function PhotoModal({
                           placeholder="Alimento"
                           placeholderTextColor={Colors.gray400}
                         />
-                        {!item.foodFound && <Text style={voiceModal.errorText}>Alimento não encontrado na base.</Text>}
+                        {!item.foodFound && <Text style={voiceModal.errorText}>{item.resolving ? 'Cadastrando com IA...' : 'Alimento não encontrado na base.'}</Text>}
+                        {!item.foodFound && !item.resolving && onCreateFood && (
+                          <TouchableOpacity style={voiceModal.aiCreateBtn} onPress={() => resolveDraftWithAi(item)}>
+                            <MaterialIcons name="auto-awesome" size={15} color={Colors.green600} />
+                            <Text style={voiceModal.aiCreateText}>Cadastrar com IA</Text>
+                          </TouchableOpacity>
+                        )}
                       </View>
                       <TouchableOpacity style={voiceModal.removeBtn} onPress={() => removeDraft(item.key)}>
                         <MaterialIcons name="close" size={18} color={Colors.gray600} />
@@ -1804,7 +1882,7 @@ export function AddMealScreen({
     const existing = findAnyFood(foodName, customFoods);
     if (existing) return existing;
 
-    const food = await generateFoodNutrition(foodName, preferredUnit);
+    const food = markAiFood(await generateFoodNutrition(foodName, preferredUnit));
     const foods = await saveCustomFood(user.id, food);
     setCustomFoods(foods);
     return food;
@@ -1858,7 +1936,7 @@ export function AddMealScreen({
         firstFirebaseError ??= error;
       }
       addEntryFn(entry);
-      if (source === 'photo' && item.food.id.startsWith('global_')) {
+      if (source === 'photo' && item.food.source === 'ai') {
         try {
           const foods = await saveCustomFood(user.id, item.food);
           setCustomFoods(foods);
@@ -2115,7 +2193,7 @@ export function AddMealScreen({
 
       <AddMealModal visible={addModal} onClose={() => setAddModal(false)} onAdded={handleMealAdded} customFoods={customFoods} onCreateFood={handleCreateFood} />
       <VoiceModal   visible={voiceModal} onClose={() => setVoiceModal(false)} onConfirm={handleVoiceConfirm} customFoods={customFoods} onCreateFood={handleCreateFood} />
-      <PhotoModal   visible={photoModal} onClose={() => setPhotoModal(false)} onConfirm={handlePhotoConfirm} customFoods={customFoods} />
+      <PhotoModal   visible={photoModal} onClose={() => setPhotoModal(false)} onConfirm={handlePhotoConfirm} customFoods={customFoods} onCreateFood={handleCreateFood} />
       {onAddWater && onWaterClose ? (
         <WaterModal visible={waterOpen} onClose={onWaterClose} onAdd={onAddWater} />
       ) : null}
@@ -2296,6 +2374,8 @@ const voiceModal = StyleSheet.create({
   foodInput:    { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, paddingVertical: 7, fontSize: Typography.sm, color: Colors.gray800, backgroundColor: Colors.white },
   inputError:   { borderColor: Colors.danger, backgroundColor: Colors.proteinL },
   errorText:    { fontSize: Typography.xs, color: Colors.danger, marginTop: 3 },
+  aiCreateBtn:  { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 5, marginTop: 6, borderWidth: 1, borderColor: Colors.green400, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, paddingVertical: 6, backgroundColor: Colors.green50 },
+  aiCreateText: { fontSize: Typography.xs, color: Colors.green600, fontWeight: Typography.bold },
   removeBtn:    { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.gray50 },
   editRow:      { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
   quantityEdit: { width: 86 },

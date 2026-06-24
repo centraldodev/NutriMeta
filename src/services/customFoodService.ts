@@ -3,6 +3,7 @@ import { collection, doc, getDocs, serverTimestamp, setDoc } from 'firebase/fire
 import { isFirebaseConfigured } from '../config';
 import { FoodItem } from '../types';
 import { COLLECTIONS, db } from './firebase';
+import { isLocalFood, LOCAL_FOODS } from './localFoodDatabase';
 
 function normalizeFoodKey(name: string) {
   return name
@@ -18,14 +19,17 @@ export function customFoodId(name: string) {
 }
 
 export async function getCustomFoods(userId: string): Promise<FoodItem[]> {
+  const localFoods = [...LOCAL_FOODS];
+
   if (isFirebaseConfigured && userId !== 'dev_user') {
     const snap = await getDocs(collection(db, COLLECTIONS.globalFoods));
-    return snap.docs.map((docSnap) => {
-      const { createdBy: _createdBy, updatedAt: _updatedAt, ...food } = docSnap.data();
-      return food as FoodItem;
+    const firebaseFoods = snap.docs.flatMap((docSnap) => {
+      const { createdBy, updatedAt: _updatedAt, ...food } = docSnap.data();
+      return createdBy ? [food as FoodItem] : [];
     });
+    return mergeFoods(localFoods, firebaseFoods);
   }
-  return [];
+  return localFoods;
 }
 
 export async function saveCustomFood(userId: string, food: FoodItem): Promise<FoodItem[]> {
@@ -34,14 +38,15 @@ export async function saveCustomFood(userId: string, food: FoodItem): Promise<Fo
   const customFood = {
     ...food,
     id: customFoodId(food.name),
+    source: food.source ?? 'user',
     aliases: Array.from(new Set([food.name.toLowerCase(), ...food.aliases])),
   };
   const next = [
     customFood,
     ...foods.filter((item) => normalizeFoodKey(item.name) !== normalizedName),
-  ].slice(0, 80);
+  ];
 
-  if (isFirebaseConfigured && userId !== 'dev_user') {
+  if (isFirebaseConfigured && userId !== 'dev_user' && !isLocalFood(food)) {
     await setDoc(doc(db, COLLECTIONS.globalFoods, customFood.id), {
       ...customFood,
       createdBy: userId,
@@ -49,4 +54,15 @@ export async function saveCustomFood(userId: string, food: FoodItem): Promise<Fo
     }, { merge: true });
   }
   return next;
+}
+
+function mergeFoods(localFoods: FoodItem[], firebaseFoods: FoodItem[]) {
+  const foodsByName = new Map<string, FoodItem>();
+  localFoods.forEach((food) => {
+    foodsByName.set(normalizeFoodKey(food.name), food);
+  });
+  firebaseFoods.forEach((food) => {
+    foodsByName.set(normalizeFoodKey(food.name), food);
+  });
+  return Array.from(foodsByName.values());
 }

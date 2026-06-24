@@ -23,7 +23,7 @@ import {
 import { saveUserProfile } from '../services/authService';
 import { refineDietGoals } from '../services/goalAiService';
 import { isFirebaseConfigured } from '../config';
-import { AI_LIMIT_MESSAGE, AI_LIMIT_TITLE, isAiLimitError } from '../utils/aiErrors';
+import { isAiLimitError, showAiLimitAlert } from '../utils/aiErrors';
 
 interface Props {
   onComplete: () => void;
@@ -160,7 +160,7 @@ export function OnboardingScreen({ onComplete }: Props) {
     } catch (e) {
       console.warn('AI onboarding goal refinement failed', e);
       if (isAiLimitError(e)) {
-        Alert.alert(AI_LIMIT_TITLE, AI_LIMIT_MESSAGE);
+        showAiLimitAlert();
         return;
       }
       Alert.alert('IA indisponível', 'Não consegui refinar suas metas agora. Você pode continuar com a meta calculada.');

@@ -1,7 +1,7 @@
 import { FoodItem, FoodNutrition, QuantityUnit } from '../types';
 
 // This file intentionally keeps only generic nutrition helpers.
-// Food records live in Firestore/globalFoods.
+// Food records are loaded from src/.data and optionally merged with Firestore/globalFoods.
 
 export function parseQuantityFromText(text: string): {
   quantity: number;

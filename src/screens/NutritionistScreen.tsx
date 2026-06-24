@@ -27,8 +27,8 @@ import { ActivityLevel, BiologicalSex, DailyLog, FoodNutrition, FoodPlan, FoodPl
 import { calcMacroGoals, formatBrasiliaTime, formatNutritionDetails, macroPercent } from '../utils/nutrition';
 import {
   AI_LIMIT_MESSAGE,
-  AI_LIMIT_TITLE,
   isAiLimitError,
+  showAiLimitAlert,
 } from '../utils/aiErrors';
 import {
   buildValidatedProfileValues,
@@ -458,7 +458,7 @@ function FoodPlanModal({
     } catch (error) {
       console.warn('Failed to analyze food plan with AI', error);
       if (isAiLimitError(error)) {
-        Alert.alert(AI_LIMIT_TITLE, `${AI_LIMIT_MESSAGE}\n\nCriei uma prévia básica sem estimativa detalhada de nutrientes.`);
+        showAiLimitAlert(`${AI_LIMIT_MESSAGE}\n\nCriei uma prévia básica sem estimativa detalhada de nutrientes.`);
       } else {
         Alert.alert('IA indisponível', 'Criei uma prévia básica sem estimativa detalhada de nutrientes.');
       }
