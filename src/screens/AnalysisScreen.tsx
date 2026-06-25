@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   ActivityIndicator,
   RefreshControl,
   ScrollView,
@@ -14,13 +13,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Colors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
 import { isFirebaseConfigured } from '../config';
-import { generateNutritionInsights, NutritionInsight } from '../services/analysisAiService';
 import { getRecentDailyLogs } from '../services/nutritionService';
 import { getCachedRecentDailyLogs } from '../services/dailyLogStorage';
 import { useStore, selectGoals } from '../store';
-import { DailyLog, FoodNutrition, MacroGoals, MealEntry, MealPeriod } from '../types';
-import { calcGoalProgressPercent, formatBrasiliaDate, formatDate, formatNutritionDetails, macroPercent, sumNutrition } from '../utils/nutrition';
-import { isAiLimitError, showAiLimitAlert } from '../utils/aiErrors';
+import { DailyLog, FoodNutrition, MealEntry, MealPeriod } from '../types';
+import { calcGoalProgressPercent, dateDaysAgoBrasilia, formatBrasiliaDate, formatDate, formatNutritionDetails, sumNutrition } from '../utils/nutrition';
 
 const EMPTY_TOTAL: FoodNutrition = { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 };
 const DEFAULT_GOALS: MacroGoals = {

@@ -1146,7 +1146,7 @@ const styles = StyleSheet.create({
 
 const modalStyles = StyleSheet.create({
   bg: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.4)' },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
   sheet: {
     maxHeight: '92%',
     width: '100%',
@@ -1245,7 +1245,7 @@ const modalStyles = StyleSheet.create({
 
 const waterStyles = StyleSheet.create({
   bg: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.base },
-  backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.35)' },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.35)' },
   card: { width: '100%', maxWidth: 380, backgroundColor: Colors.white, borderRadius: Radius.xl, padding: Spacing.base, ...Shadows.lg },
   title: { fontSize: Typography.lg, fontWeight: Typography.bold, color: Colors.gray800, marginBottom: Spacing.md, textAlign: 'center' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },

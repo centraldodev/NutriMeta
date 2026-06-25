@@ -153,7 +153,7 @@ export function NutritionistChatModal({
 
 const styles = StyleSheet.create({
   bg: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.25)' },
-  backdrop: { ...StyleSheet.absoluteFill },
+  backdrop: { ...StyleSheet.absoluteFillObject },
   sheet: {
     maxHeight: '82%',
     width: '100%',

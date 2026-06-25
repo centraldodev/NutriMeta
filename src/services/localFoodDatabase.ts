@@ -8,6 +8,7 @@ type GeneralFoodRecord = {
   categoria?: string | null;
   subcategoria?: string | null;
   porcao_referencia?: string | null;
+  ingredientes?: { nome: string; quantidade_g?: number }[];
   nutrientes: {
     energia_kcal?: number | null;
     carboidratos_g?: number | null;
@@ -28,41 +29,14 @@ type GeneralFoodRecord = {
     vitamina_E_mg?: number | null;
     vitamina_B12_mcg?: number | null;
     folato_mcg?: number | null;
+    fosforo_mg?: number | null;
+    selenio_mcg?: number | null;
+    manganes_mg?: number | null;
+    cobre_mg?: number | null;
   };
   fonte?: string;
   observacoes?: string;
   tags?: string[];
-};
-
-type PreparedDishRecord = {
-  id: number | string;
-  nome: string;
-  categoria?: string;
-  descricao?: string;
-  porcao_g: number;
-  ingredientes?: { nome: string; quantidade_g?: number }[];
-  macronutrientes: {
-    calorias_kcal?: number;
-    proteinas_g?: number;
-    carboidratos_g?: number;
-    gorduras_totais_g?: number;
-    fibras_g?: number;
-    sodio_mg?: number;
-    acucares_g?: number;
-  };
-  micronutrientes?: {
-    vitamina_A_mcg?: number;
-    vitamina_C_mg?: number;
-    vitamina_D_mcg?: number;
-    vitamina_E_mg?: number;
-    vitamina_B12_mcg?: number;
-    calcio_mg?: number;
-    ferro_mg?: number;
-    potassio_mg?: number;
-    magnesio_mg?: number;
-    zinco_mg?: number;
-    folato_mcg?: number;
-  };
 };
 
 type GeneralFoodDatabase = {
@@ -71,17 +45,7 @@ type GeneralFoodDatabase = {
   alimentos: GeneralFoodRecord[];
 };
 
-type PreparedDishDatabase = {
-  titulo: string;
-  descricao: string;
-  fonte: string;
-  unidade_porcao: string;
-  pratos: PreparedDishRecord[];
-  legenda_nutrientes?: Record<string, unknown>;
-  referencias_IDR?: Record<string, unknown>;
-};
-
-function localFoodId(prefix: string, rawId: string | number, name: string) {
+function localFoodId(prefix: string, rawId: string, name: string) {
   const sourceId = String(rawId || name)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -142,6 +106,12 @@ function unitFromReference(reference?: string | null): QuantityUnit {
   return 'porcao';
 }
 
+function amountFromReference(reference?: string | null) {
+  const match = (reference ?? '').replace(',', '.').match(/(\d+(?:\.\d+)?)/);
+  const amount = match ? Number(match[1]) : 100;
+  return Number.isFinite(amount) && amount > 0 ? amount : 100;
+}
+
 function emojiForCategory(category?: string | null) {
   const text = (category ?? '').toLowerCase();
   if (text.includes('bebida')) return '🥤';
@@ -155,7 +125,11 @@ function emojiForCategory(category?: string | null) {
   return '🍽️';
 }
 
-function mapGeneralFood(record: GeneralFoodRecord, metadata: Record<string, unknown>, schema: Record<string, unknown>): FoodItem {
+function mapFoodRecord(
+  record: GeneralFoodRecord,
+  database: GeneralFoodDatabase,
+  options: { idPrefix: string; source: string }
+): FoodItem {
   const nutrition = cleanNutrition({
     kcal: numberOrZero(record.nutrientes.energia_kcal),
     protein: numberOrZero(record.nutrientes.proteinas_g),
@@ -177,83 +151,43 @@ function mapGeneralFood(record: GeneralFoodRecord, metadata: Record<string, unkn
     folate: numberOrUndefined(record.nutrientes.folato_mcg),
   });
   const defaultUnit = unitFromReference(record.porcao_referencia);
+  const referenceAmount = amountFromReference(record.porcao_referencia);
+  const ingredientAliases = record.ingredientes?.map((ingredient) => ingredient.nome) ?? [];
 
   return {
-    id: localFoodId('alimento', record.id, record.nome),
+    id: localFoodId(options.idPrefix, record.id, record.nome),
     name: record.nome,
     emoji: emojiForCategory(record.categoria),
-    aliases: aliasesFor([record.nome, record.categoria, record.subcategoria, ...(record.tags ?? [])]),
+    aliases: aliasesFor([record.nome, record.categoria, record.subcategoria, record.observacoes, ...(record.tags ?? []), ...ingredientAliases]),
     defaultUnit,
     nutritionPer: {
-      [defaultUnit]: divideNutrition(nutrition, 100),
+      [defaultUnit]: divideNutrition(nutrition, referenceAmount),
       porcao: nutrition,
     },
-    source: 'json:base_alimentos_geral_taco_estimativas',
+    source: options.source,
     category: record.categoria ?? undefined,
     portionReference: record.porcao_referencia ?? undefined,
+    ingredients: record.ingredientes,
     originalData: {
-      metadata,
-      schema,
+      metadata: database.metadata,
+      schema: database.schema,
       alimento: record,
     },
   };
 }
 
-function mapPreparedDish(record: PreparedDishRecord, database: PreparedDishDatabase): FoodItem {
-  const nutrition = cleanNutrition({
-    kcal: numberOrZero(record.macronutrientes.calorias_kcal),
-    protein: numberOrZero(record.macronutrientes.proteinas_g),
-    carbs: numberOrZero(record.macronutrientes.carboidratos_g),
-    fat: numberOrZero(record.macronutrientes.gorduras_totais_g),
-    fiber: numberOrZero(record.macronutrientes.fibras_g),
-    sodium: numberOrUndefined(record.macronutrientes.sodio_mg),
-    sugar: numberOrUndefined(record.macronutrientes.acucares_g),
-    calcium: numberOrUndefined(record.micronutrientes?.calcio_mg),
-    iron: numberOrUndefined(record.micronutrientes?.ferro_mg),
-    potassium: numberOrUndefined(record.micronutrientes?.potassio_mg),
-    magnesium: numberOrUndefined(record.micronutrientes?.magnesio_mg),
-    zinc: numberOrUndefined(record.micronutrientes?.zinco_mg),
-    vitaminA: numberOrUndefined(record.micronutrientes?.vitamina_A_mcg),
-    vitaminC: numberOrUndefined(record.micronutrientes?.vitamina_C_mg),
-    vitaminD: numberOrUndefined(record.micronutrientes?.vitamina_D_mcg),
-    vitaminE: numberOrUndefined(record.micronutrientes?.vitamina_E_mg),
-    vitaminB12: numberOrUndefined(record.micronutrientes?.vitamina_B12_mcg),
-    folate: numberOrUndefined(record.micronutrientes?.folato_mcg),
-  });
-  const ingredientAliases = record.ingredientes?.map((ingredient) => ingredient.nome) ?? [];
-
-  return {
-    id: localFoodId('prato', record.id, record.nome),
-    name: record.nome,
-    emoji: '🍛',
-    aliases: aliasesFor([record.nome, record.categoria, record.descricao, ...ingredientAliases]),
-    defaultUnit: 'porcao',
-    nutritionPer: {
-      porcao: nutrition,
-      grama: divideNutrition(nutrition, record.porcao_g || 1),
-    },
-    source: 'json:pratos_feitos_brasileiros',
-    category: record.categoria,
-    portionReference: `${record.porcao_g}g`,
-    ingredients: record.ingredientes,
-    originalData: {
-      titulo: database.titulo,
-      descricao: database.descricao,
-      fonte: database.fonte,
-      unidade_porcao: database.unidade_porcao,
-      legenda_nutrientes: database.legenda_nutrientes,
-      referencias_IDR: database.referencias_IDR,
-      prato: record,
-    },
-  };
-}
-
 const generalDatabase = generalFoodDatabase as GeneralFoodDatabase;
-const preparedDatabase = preparedDishesDatabase as PreparedDishDatabase;
+const preparedDatabase = preparedDishesDatabase as GeneralFoodDatabase;
 
 export const LOCAL_FOODS: FoodItem[] = [
-  ...generalDatabase.alimentos.map((record) => mapGeneralFood(record, generalDatabase.metadata, generalDatabase.schema)),
-  ...preparedDatabase.pratos.map((record) => mapPreparedDish(record, preparedDatabase)),
+  ...generalDatabase.alimentos.map((record) => mapFoodRecord(record, generalDatabase, {
+    idPrefix: 'alimento',
+    source: 'json:base_alimentos_geral_taco_estimativas',
+  })),
+  ...preparedDatabase.alimentos.map((record) => mapFoodRecord(record, preparedDatabase, {
+    idPrefix: 'prato',
+    source: 'json:pratos_feitos_brasileiros',
+  })),
 ];
 
 export function isLocalFood(food: Pick<FoodItem, 'source'>) {

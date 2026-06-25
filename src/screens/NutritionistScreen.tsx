@@ -1164,7 +1164,7 @@ const styles = StyleSheet.create({
   emptyTitle: { marginTop: Spacing.sm, fontSize: Typography.base, color: Colors.gray800, fontWeight: Typography.bold },
   emptyText: { marginTop: 4, fontSize: Typography.sm, color: Colors.gray400, textAlign: 'center', lineHeight: 18 },
   modalBg: { flex: 1, justifyContent: 'flex-end' },
-  modalBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.4)' },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
   modalSheet: {
     maxHeight: '92%',
     width: '100%',

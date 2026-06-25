@@ -76,7 +76,7 @@ function MainTabs() {
         {tab === 'home' && <HomeScreen />}
         {tab === 'addMeal' && (
           <AddMealScreen
-            onMealAdded={() => setTab('analysis')}
+            onMealAdded={() => setTab('addMeal')}
             fabBottomOffset={screenFabBottom}
             waterOpen={waterOpen}
             onWaterOpen={() => setWaterOpen(true)}

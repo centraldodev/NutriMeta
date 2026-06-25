@@ -6,10 +6,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons } from '@expo/vector-icons';
-import { Colors, Typography, Spacing, Radius, Shadows } from '../constants/theme';
+import { Colors, Typography, Spacing, Radius } from '../constants/theme';
 import { useStore, selectGoals, selectSavedMeals } from '../store';
-import { incrementMealUsage, removeMealEntry } from '../services/nutritionService';
+import { getRecentDailyLogs, incrementMealUsage, removeMealEntry } from '../services/nutritionService';
 import { addCommunityPost } from '../services/groupService';
+import { getCachedRecentDailyLogs } from '../services/dailyLogStorage';
 import { WaterModal } from './HomeScreen';
 import { removePendingMealEntryByEntryId, saveMealEntryOrQueue, subscribePendingMealEntries } from '../services/pendingSyncService';
 import { analyzeMealPhoto, PhotoMealAiItem } from '../services/photoMealAiService';
@@ -21,8 +22,8 @@ import {
   calculateNutrition,
   UNIT_LABELS,
 } from '../constants/foodDatabase';
-import { FoodItem, FoodNutrition, MealEntry, MealPeriod, QuantityUnit } from '../types';
-import { formatBrasiliaTime, formatNutritionDetails, generateId, formatDate, getBrasiliaHour, sumNutrition } from '../utils/nutrition';
+import { DailyLog, FoodItem, FoodNutrition, MealEntry, MealPeriod, QuantityUnit } from '../types';
+import { dateDaysAgoBrasilia, formatBrasiliaDate, formatBrasiliaTime, formatNutritionDetails, generateId, formatDate, getBrasiliaHour, sumNutrition } from '../utils/nutrition';
 import { isAiLimitError, showAiLimitAlert } from '../utils/aiErrors';
 import { isFirebaseConfigured } from '../config';
 
@@ -31,6 +32,30 @@ declare const require: (name: string) => any;
 const enrichedFoodIdsThisSession = new Set<string>();
 const ENRICH_FOODS_PER_LOAD = 8;
 let foodEnrichmentPaused = false;
+
+function mergeDailyLogs(primary: DailyLog[], secondary: DailyLog[]): DailyLog[] {
+  const byDate = new Map<string, DailyLog>();
+  secondary.forEach((log) => byDate.set(log.date, log));
+  primary.forEach((log) => byDate.set(log.date, log));
+  return Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function formatDateChip(date: string) {
+  const [year, month, day] = date.split('-').map(Number);
+  return {
+    day: formatBrasiliaDate(new Date(Date.UTC(year, month - 1, day, 12)), { day: '2-digit' }),
+    weekday: formatBrasiliaDate(new Date(Date.UTC(year, month - 1, day, 12)), { weekday: 'short' }).replace('.', ''),
+  };
+}
+
+function formatLogDateLabel(date: string) {
+  const [year, month, day] = date.split('-').map(Number);
+  return formatBrasiliaDate(new Date(Date.UTC(year, month - 1, day, 12)), {
+    weekday: 'long',
+    day: '2-digit',
+    month: 'long',
+  });
+}
 
 type SpeechRecognitionModule = {
   addListener: (eventName: string, listener: (event: any) => void) => { remove: () => void };
@@ -122,6 +147,11 @@ const FOOD_SYNONYMS: Record<string, string[]> = {
   frango: ['frango', 'galinha'],
   carne: ['carne', 'bovina'],
   leite: ['leite', 'vaca', 'integral'],
+  catupiry: ['requeijao', 'cremoso'],
+};
+
+const FOOD_COMPONENT_ALIASES: Record<string, string[]> = {
+  catupiry: ['requeijao cremoso'],
 };
 
 function normalizeFoodText(value: string) {
@@ -131,6 +161,9 @@ function normalizeFoodText(value: string) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/ç/g, 'c')
     .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\bmussarela\b/g, 'mucarela')
+    .replace(/\bmozarela\b/g, 'mucarela')
+    .replace(/\bcatupiri\b/g, 'catupiry')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -214,15 +247,88 @@ function findExactFood(query: string, customFoods: FoodItem[] = []): FoodItem | 
   );
 }
 
+function findLiteralFood(query: string, customFoods: FoodItem[] = []): FoodItem | undefined {
+  const normalized = normalizeFoodText(query);
+  if (!normalized) return undefined;
+  return customFoods.find((food) => normalizeFoodText(food.name) === normalized);
+}
+
+function findContainedFood(query: string, customFoods: FoodItem[] = []): FoodItem | undefined {
+  const normalized = normalizeFoodText(query);
+  if (!normalized) return undefined;
+  const tokenCount = foodTokens(normalized).length;
+  const matches = customFoods
+    .filter((food) => {
+      const foodName = normalizeFoodText(food.name);
+      if (foodName === normalized) return true;
+      if (tokenCount < 2) return false;
+      return foodName.includes(normalized);
+    })
+    .sort((a, b) => a.name.length - b.name.length);
+  return matches[0];
+}
+
+function findCompositePartFood(query: string, customFoods: FoodItem[] = []): FoodItem | undefined {
+  const normalized = normalizeFoodText(query);
+  const candidates = [normalized, ...(FOOD_COMPONENT_ALIASES[normalized] ?? [])];
+  for (const candidate of candidates) {
+    const food = findLiteralFood(candidate, customFoods) ?? findContainedFood(candidate, customFoods);
+    if (food) return food;
+  }
+  return undefined;
+}
+
+function splitCompositeFoodQuery(query: string): string[] {
+  return normalizeFoodText(query)
+    .split(/\b(?:acompanhado de|acompanhada de|acompanhado|acompanhada|com|e|mais|junto)\b|[,;+&/]/g)
+    .map((part) => part.trim())
+    .filter((part) => foodTokens(part).length > 0);
+}
+
+function findCompositeFoods(query: string, customFoods: FoodItem[] = []): FoodItem[] {
+  const parts = splitCompositeFoodQuery(query);
+  if (parts.length < 2) return [];
+
+  const matches: FoodItem[] = [];
+  const seen = new Set<string>();
+
+  parts.forEach((part) => {
+    const food = findCompositePartFood(part, customFoods);
+    if (!food || seen.has(food.id)) return;
+    seen.add(food.id);
+    matches.push(food);
+  });
+
+  return matches.length >= 2 ? matches : [];
+}
+
+function isCompositeFoodQuery(query: string): boolean {
+  return splitCompositeFoodQuery(query).length >= 2;
+}
+
 function searchFoods(query: string, customFoods: FoodItem[] = []): FoodItem[] {
   const q = query.trim();
   if (!q) return customFoods;
+  const normalized = normalizeFoodText(q);
 
-  return customFoods
-    .map((food) => ({ food, score: foodMatchScore(q, food) }))
-    .filter((item) => item.score >= 25)
-    .sort((a, b) => b.score - a.score || a.food.name.length - b.food.name.length)
-    .map((item) => item.food);
+  const directMatches = customFoods
+    .filter((food) => normalizeFoodText(food.name).includes(normalized))
+    .sort((a, b) => {
+      const aName = normalizeFoodText(a.name);
+      const bName = normalizeFoodText(b.name);
+      const aExact = aName === normalized ? 0 : 1;
+      const bExact = bName === normalized ? 0 : 1;
+      return aExact - bExact || a.name.length - b.name.length;
+    });
+
+  if (directMatches.length > 0) return directMatches;
+
+  const aliasMatches = (FOOD_COMPONENT_ALIASES[normalized] ?? [])
+    .map((alias) => findCompositePartFood(alias, customFoods))
+    .filter((food): food is FoodItem => Boolean(food));
+  if (aliasMatches.length > 0) return aliasMatches;
+
+  return findCompositeFoods(q, customFoods);
 }
 
 function isWaterFood(food: Pick<FoodItem, 'name' | 'aliases'> | null): boolean {
@@ -395,7 +501,6 @@ function splitVoiceText(rawText: string, customFoods: FoodItem[] = []): string[]
     .replace(/\barroz com feij[aã]o\b/gi, 'arroz_com_feijao');
 
   const base = normalized
-    .replace(/\s+(?:e|mais|tamb[eé]m)\s+/gi, ',')
     .split(/[,;]/)
     .map(cleanVoiceSegment)
     .map((segment) => segment
@@ -436,6 +541,7 @@ function parseVoiceMeal(rawText: string, customFoods: FoodItem[] = []): MealDraf
     const parsed = food ? parseVoiceQuantity(segment, food) : parseQuantityFromText(segment);
     const quantity = parsed.quantity > 0 ? parsed.quantity : 1;
     if (!food) {
+      const isComposite = isCompositeFoodQuery(segment);
       return [{
         key: `voice_missing_${index}_${segment}_${quantity}_${parsed.unit}`,
         food: null,
@@ -444,7 +550,9 @@ function parseVoiceMeal(rawText: string, customFoods: FoodItem[] = []): MealDraf
         quantity,
         unit: parsed.unit,
         nutrition: emptyNutrition(),
-        sourceNote: 'IA vai cadastrar este alimento nos seus alimentos.',
+        sourceNote: isComposite
+          ? 'IA vai cadastrar esta refeição completa nos seus alimentos.'
+          : 'IA vai cadastrar este alimento nos seus alimentos.',
         resolving: false,
       }];
     }
@@ -476,6 +584,31 @@ function expandCompositeVoiceSegment(segment: string, customFoods: FoodItem[], i
       { term: 'arroz cozido', quantity: 1, unit: 'porcao' },
       { term: 'feijão cozido', quantity: 1, unit: 'porcao' }
     );
+  }
+
+  if (parts.length === 0) {
+    const compositeParts = splitCompositeFoodQuery(segment);
+    if (compositeParts.length >= 2) {
+      const drafts = compositeParts.map((part, partIndex): MealDraft | null => {
+        const food = findCompositePartFood(part, customFoods) ?? findBestFood(part, customFoods, 24) ?? findAnyFood(part, customFoods);
+        if (!food) return null;
+        const parsed = parseVoiceQuantity(part, food);
+        const quantity = parsed.quantity > 0 ? parsed.quantity : 1;
+        const unit = compatibleDetectedUnit(food, parsed.unit);
+        return {
+          key: `${food.id}_${index}_${partIndex}_${quantity}_${unit}`,
+          food,
+          foodText: food.name,
+          foodFound: true,
+          quantity,
+          unit,
+          nutrition: calculateNutrition(food, quantity, unit),
+          sourceNote: `Falado: ${segment}`,
+        };
+      });
+
+      if (drafts.every(Boolean)) return drafts as MealDraft[];
+    }
   }
 
   return parts.flatMap((part, partIndex): MealDraft[] => {
@@ -594,17 +727,16 @@ function AddMealModal({
   const addEntry = useStore((s) => s.addEntry);
 
   const [foodQuery, setFoodQuery] = useState('');
-  const [quantity,  setQuantity]  = useState('1');
-  const [unit,      setUnit]      = useState<QuantityUnit>('porcao');
   const [saving,    setSaving]    = useState(false);
   const [selecting, setSelecting] = useState(false);
+  const [addingFoodId, setAddingFoodId] = useState<string | null>(null);
   const [foodItem,  setFoodItem]  = useState<FoodItem | null>(null);
   const [selectedFoods, setSelectedFoods] = useState<ManualMealSelection[]>([]);
+  const selectedFoodsRef = React.useRef<ManualMealSelection[]>([]);
   const [mealPeriod, setMealPeriod] = useState<MealPeriod>(getDefaultMealPeriod());
 
   const suggestions = React.useMemo(() => searchFoods(foodQuery, customFoods), [customFoods, foodQuery]);
   const exactFoodMatch = React.useMemo(() => findExactFood(foodQuery, customFoods), [customFoods, foodQuery]);
-  const availableUnits = React.useMemo(() => getFoodUnits(foodItem), [foodItem]);
   const frequentFoods = React.useMemo(() => {
     const counts = new Map<string, { food: FoodItem; count: number }>();
     const addFood = (foodName: string, amount = 1) => {
@@ -629,27 +761,31 @@ function AddMealModal({
   React.useEffect(() => {
     if (!visible) return;
     setFoodQuery('');
-    setQuantity('1');
-    setUnit('porcao');
     setFoodItem(null);
-    setSelectedFoods([]);
+    updateSelectedFoods([]);
     setMealPeriod(getDefaultMealPeriod());
   }, [visible]);
+
+  function updateSelectedFoods(next: ManualMealSelection[] | ((items: ManualMealSelection[]) => ManualMealSelection[])) {
+    const nextItems = typeof next === 'function' ? next(selectedFoodsRef.current) : next;
+    selectedFoodsRef.current = nextItems;
+    setSelectedFoods(nextItems);
+  }
 
   function handleSelectFood(food: FoodItem) {
     setFoodItem(food);
     setFoodQuery(food.name);
-    setQuantity('1');
-    setUnit(getPreferredFoodUnit(food));
-    void enrichFoodBeforeUse(food);
+    void enrichFoodBeforeUse(food, { updateCurrentFood: true });
   }
 
-  async function enrichFoodBeforeUse(food: FoodItem): Promise<FoodItem> {
+  async function enrichFoodBeforeUse(food: FoodItem, options: { updateCurrentFood?: boolean } = {}): Promise<FoodItem> {
     if (!isFirebaseConfigured || !user || user.id === 'dev_user' || hasExpandedNutrition(food)) return food;
     try {
       const enriched = await enrichGlobalFood({ userId: user.id, food });
-      setFoodItem(enriched);
-      setFoodQuery(enriched.name);
+      if (options.updateCurrentFood) {
+        setFoodItem((current) => (current?.id === food.id ? enriched : current));
+        setFoodQuery((current) => (current === food.name ? enriched.name : current));
+      }
       return enriched;
     } catch (error) {
       if (isAiLimitError(error)) {
@@ -671,18 +807,19 @@ function AddMealModal({
   async function resolveCurrentFood(): Promise<FoodItem> {
     let food = foodItem ?? findAnyFood(foodQuery, customFoods);
     if (!food) {
-      food = await onCreateFood(foodQuery, unit);
+      food = await onCreateFood(foodQuery, 'porcao');
       setFoodItem(food);
       setFoodQuery(food.name);
-      setUnit(getPreferredFoodUnit(food));
     }
     return enrichFoodBeforeUse(food);
   }
 
-  function selectionFromFood(food: FoodItem): ManualMealSelection {
-    const selectedUnit = food.nutritionPer[unit] ? unit : food.defaultUnit;
-    const typedQuantity = parseQtyInput(quantity);
-    const parsedQuantity = food.defaultUnit === 'mililitro' && selectedUnit === 'mililitro' && !food.nutritionPer[unit] && typedQuantity === 1
+  function selectionFromFood(food: FoodItem, options: { quantityText?: string; preferredUnit?: QuantityUnit } = {}): ManualMealSelection {
+    const requestedUnit = options.preferredUnit ?? getPreferredFoodUnit(food);
+    const selectedUnit = food.nutritionPer[requestedUnit] ? requestedUnit : food.defaultUnit;
+    const requestedQuantity = options.quantityText ?? '1';
+    const typedQuantity = parseQtyInput(requestedQuantity);
+    const parsedQuantity = food.defaultUnit === 'mililitro' && selectedUnit === 'mililitro' && !food.nutritionPer[requestedUnit] && typedQuantity === 1
       ? 200
       : typedQuantity;
 
@@ -695,16 +832,49 @@ function AddMealModal({
     };
   }
 
+  function updateSelectedFood(key: string, changes: { quantityText?: string; unit?: QuantityUnit }) {
+    updateSelectedFoods((items) => items.map((item) => {
+      if (item.key !== key) return item;
+      const nextUnit = changes.unit ?? item.unit;
+      const quantity = changes.quantityText !== undefined ? parseQtyInput(changes.quantityText) : item.quantity;
+      return {
+        ...item,
+        quantity,
+        unit: nextUnit,
+        nutrition: calculateNutrition(item.food, quantity, nextUnit),
+      };
+    }));
+  }
+
+  async function handleAddFoodOption(food: FoodItem) {
+    if (selecting || saving || addingFoodId) return;
+    setAddingFoodId(food.id);
+    try {
+      const enriched = await enrichFoodBeforeUse(food);
+      const preferredUnit = getPreferredFoodUnit(enriched);
+      const selection = selectionFromFood(enriched, { preferredUnit });
+      updateSelectedFoods((items) => [...items, selection]);
+      if (foodItem?.id === food.id) {
+        setFoodQuery('');
+        setFoodItem(null);
+      }
+    } catch (error) {
+      console.warn('Failed to add food option', error);
+      if (isAiLimitError(error)) showAiLimitAlert();
+      else Alert.alert('Erro', 'Não foi possível adicionar este alimento agora.');
+    } finally {
+      setAddingFoodId(null);
+    }
+  }
+
   async function handleSelectCurrentFood() {
     if (isEmpty || selecting) return;
     setSelecting(true);
     try {
       const food = await resolveCurrentFood();
       const selection = selectionFromFood(food);
-      setSelectedFoods((items) => [...items, selection]);
+      updateSelectedFoods((items) => [...items, selection]);
       setFoodQuery('');
-      setQuantity('1');
-      setUnit('porcao');
       setFoodItem(null);
     } catch (error) {
       console.warn('AI food creation failed', error);
@@ -720,7 +890,7 @@ function AddMealModal({
 
   async function handleAdd() {
     if (!user || !goals) return;
-    let itemsToSave = selectedFoods;
+    let itemsToSave = selectedFoodsRef.current;
     if (itemsToSave.length === 0 && !isEmpty) {
       try {
         setSaving(true);
@@ -777,11 +947,12 @@ function AddMealModal({
         console.warn('Manual meal queued for Firebase sync', firebaseErrorMessage(queuedError));
       }
       setFoodQuery('');
-      setQuantity('1');
-      setUnit('porcao');
       setFoodItem(null);
-      setSelectedFoods([]);
-      if (lastEntry) onAdded(lastEntry);
+      updateSelectedFoods([]);
+      if (lastEntry) {
+        onClose();
+        onAdded(lastEntry);
+      }
     } catch (error) {
       console.warn('Manual meal save failed', error);
       Alert.alert('Erro', 'Não foi possível adicionar esta refeição agora.');
@@ -791,13 +962,12 @@ function AddMealModal({
   }
 
   const isEmpty = !foodQuery.trim();
-  const canCreateWithAi = !isEmpty && !exactFoodMatch;
+  const canCreateWithAi = !isEmpty && !exactFoodMatch && suggestions.length === 0;
   const selectedTotal = React.useMemo(
     () => sumNutrition(selectedFoods.map((item) => ({ nutrition: item.nutrition }))),
     [selectedFoods]
   );
-  const canSelectCurrentFood = !isEmpty && !selecting && !saving;
-  const canSaveMeal = selectedFoods.length > 0 && !saving && !selecting;
+  const canSaveMeal = selectedFoods.length > 0 && !saving && !selecting && !addingFoodId;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -868,8 +1038,20 @@ function AddMealModal({
                         <Text style={modal.foodUnit}>Padrão: {UNIT_LABELS[previewUnit]}</Text>
                         <NutritionSummary nutrition={previewNutrition} />
                       </View>
-                      {incomplete && !selected ? <MaterialIcons name="auto-awesome" size={18} color={Colors.warning} /> : null}
-                      {selected && <MaterialIcons name="check-circle" size={20} color={Colors.green600} />}
+                      <View style={modal.foodActions}>
+                        {incomplete && !selected ? <MaterialIcons name="auto-awesome" size={18} color={Colors.warning} /> : null}
+                        {selected && <MaterialIcons name="check-circle" size={20} color={Colors.green600} />}
+                        <TouchableOpacity
+                          style={[modal.foodAddButton, (saving || selecting || !!addingFoodId) && modal.foodAddButtonDisabled]}
+                          onPress={() => handleAddFoodOption(food)}
+                          disabled={saving || selecting || !!addingFoodId}
+                          accessibilityLabel={`Adicionar ${food.name}`}
+                        >
+                          {addingFoodId === food.id
+                            ? <ActivityIndicator size="small" color={Colors.white} />
+                            : <MaterialIcons name="add" size={20} color={Colors.white} />}
+                        </TouchableOpacity>
+                      </View>
                     </TouchableOpacity>
                   );
                 })}
@@ -879,8 +1061,8 @@ function AddMealModal({
                       {selecting ? <ActivityIndicator color={Colors.green600} /> : <MaterialIcons name="auto-awesome" size={20} color={Colors.green600} />}
                     </View>
                     <View style={modal.foodInfo}>
-                      <Text style={modal.aiCreateTitle}>Cadastrar "{foodQuery.trim()}" com IA</Text>
-                      <Text style={modal.aiCreateText}>Vou estimar os nutrientes e salvar nos seus alimentos.</Text>
+                      <Text style={modal.aiCreateTitle}>Adicionar "{foodQuery.trim()}" com IA</Text>
+                      <Text style={modal.aiCreateText}>Vou estimar os nutrientes, salvar o alimento e incluir na refeição.</Text>
                     </View>
                   </TouchableOpacity>
                 )}
@@ -895,46 +1077,12 @@ function AddMealModal({
             <View style={modal.bottomPanel}>
               <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
 
-              <View style={modal.qtyRow}>
-                <View style={modal.qtyField}>
-                  <Text style={modal.label}>Quantidade</Text>
-                  <TextInput
-                    style={modal.input}
-                    value={quantity}
-                    onChangeText={setQuantity}
-                    keyboardType="decimal-pad"
-                    placeholder="1"
-                    placeholderTextColor={Colors.gray400}
-                  />
+              {selectedFoods.length === 0 ? (
+                <View style={modal.emptySelection}>
+                  <MaterialIcons name="add-circle-outline" size={24} color={Colors.green600} />
+                  <Text style={modal.emptySelectionText}>Use o botão + nos alimentos acima para montar a refeição.</Text>
                 </View>
-                <View style={modal.qtyHintBox}>
-                  <Text style={modal.qtyHintTitle}>Dica</Text>
-                  <Text style={modal.qtyHint}>Use gramas para maior precisão quando souber o peso.</Text>
-                </View>
-              </View>
-
-              <Text style={modal.label}>Unidade</Text>
-              <View style={modal.unitWrap}>
-                {availableUnits.map((u) => (
-                  <TouchableOpacity
-                    key={u}
-                    style={[modal.unitChip, unit === u && modal.unitChipActive]}
-                    onPress={() => setUnit(u)}
-                  >
-                    <Text style={[modal.unitChipText, unit === u && modal.unitChipTextActive]}>{UNIT_LABELS[u]}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <TouchableOpacity
-                style={[modal.btnSelectFood, !canSelectCurrentFood && modal.btnDisabled]}
-                onPress={handleSelectCurrentFood}
-                disabled={!canSelectCurrentFood}
-              >
-                {selecting ? <ActivityIndicator color={Colors.green600} /> : <Text style={modal.btnSelectFoodText}>Selecionar alimento</Text>}
-              </TouchableOpacity>
-
-              {selectedFoods.length > 0 && (
+              ) : (
                 <View style={modal.selectedBox}>
                   <View style={modal.selectedHeader}>
                     <Text style={modal.selectedTitle}>Itens desta refeição</Text>
@@ -942,38 +1090,62 @@ function AddMealModal({
                   </View>
                   {selectedFoods.map((item) => (
                     <View key={item.key} style={modal.selectedItem}>
-                      <Text style={modal.selectedEmoji}>{item.food.emoji}</Text>
-                      <View style={modal.selectedInfo}>
-                        <Text style={modal.selectedName}>{item.food.name}</Text>
-                        <Text style={modal.selectedMeta}>
-                          {item.quantity} {UNIT_LABELS[item.unit]} · {Math.round(item.nutrition.kcal)} kcal
-                        </Text>
+                      <View style={modal.selectedTopRow}>
+                        <Text style={modal.selectedEmoji}>{item.food.emoji}</Text>
+                        <View style={modal.selectedInfo}>
+                          <Text style={modal.selectedName}>{item.food.name}</Text>
+                          <Text style={modal.selectedMeta}>{Math.round(item.nutrition.kcal)} kcal</Text>
+                        </View>
+                        <TouchableOpacity
+                          style={modal.selectedRemove}
+                          onPress={() => updateSelectedFoods((items) => items.filter((current) => current.key !== item.key))}
+                        >
+                          <MaterialIcons name="close" size={18} color={Colors.gray400} />
+                        </TouchableOpacity>
                       </View>
-                      <TouchableOpacity
-                        style={modal.selectedRemove}
-                        onPress={() => setSelectedFoods((items) => items.filter((current) => current.key !== item.key))}
-                      >
-                        <Text style={modal.selectedRemoveText}>✕</Text>
-                      </TouchableOpacity>
+                      <View style={modal.selectedControls}>
+                        <View style={modal.selectedQtyField}>
+                          <Text style={modal.inlineLabel}>Qtd.</Text>
+                          <TextInput
+                            style={modal.selectedQtyInput}
+                            value={String(item.quantity).replace('.', ',')}
+                            onChangeText={(value) => updateSelectedFood(item.key, { quantityText: value })}
+                            keyboardType="decimal-pad"
+                            placeholder="1"
+                            placeholderTextColor={Colors.gray400}
+                          />
+                        </View>
+                        <View style={modal.selectedUnits}>
+                          {getFoodUnits(item.food).map((unitOption) => (
+                            <TouchableOpacity
+                              key={unitOption}
+                              style={[modal.unitChip, item.unit === unitOption && modal.unitChipActive]}
+                              onPress={() => updateSelectedFood(item.key, { unit: unitOption })}
+                            >
+                              <Text style={[modal.unitChipText, item.unit === unitOption && modal.unitChipTextActive]}>{UNIT_LABELS[unitOption]}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </View>
                     </View>
                   ))}
                 </View>
               )}
-
-              <View style={modal.actions}>
-                <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
-                  <Text style={modal.btnCancelText}>Fechar</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[modal.btnAdd, !canSaveMeal && modal.btnDisabled]}
-                  onPress={handleAdd}
-                  disabled={!canSaveMeal}
-                >
-                  {saving ? <ActivityIndicator color={Colors.white} /> : <Text style={modal.btnAddText}>Adicionar refeição</Text>}
-                </TouchableOpacity>
-              </View>
             </View>
           </ScrollView>
+
+          <View style={modal.actions}>
+            <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
+              <Text style={modal.btnCancelText}>Fechar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[modal.btnAdd, !canSaveMeal && modal.btnDisabled]}
+              onPress={handleAdd}
+              disabled={!canSaveMeal}
+            >
+              {saving ? <ActivityIndicator color={Colors.white} /> : <Text style={modal.btnAddText}>Adicionar refeição</Text>}
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     </Modal>
@@ -1758,7 +1930,7 @@ export function PhotoModal({
 
 // ─── Today Log ────────────────────────────────────────────────────────────────
 
-function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete: () => void }) {
+function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete?: () => void }) {
   const time = formatBrasiliaTime(new Date(entry.addedAt));
   const mealPeriod = getEntryMealPeriod(entry);
   const nutritionDetails = formatNutritionDetails(entry.nutrition);
@@ -1777,9 +1949,11 @@ function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete: () => voi
       <View style={logStyle.right}>
         <Text style={logStyle.kcal}>{Math.round(entry.nutrition.kcal)}</Text>
         <Text style={logStyle.kcalLabel}>kcal</Text>
-        <TouchableOpacity onPress={onDelete} style={logStyle.delBtn}>
-          <Text style={logStyle.delTxt}>✕</Text>
-        </TouchableOpacity>
+        {onDelete ? (
+          <TouchableOpacity onPress={onDelete} style={logStyle.delBtn}>
+            <Text style={logStyle.delTxt}>✕</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );
@@ -1814,10 +1988,35 @@ export function AddMealScreen({
   const [voiceModal, setVoiceModal] = useState(false);
   const [photoModal, setPhotoModal] = useState(false);
   const [customFoods, setCustomFoods] = useState<FoodItem[]>([]);
+  const [recentLogs, setRecentLogs] = useState<DailyLog[]>([]);
+  const [selectedDate, setSelectedDate] = useState(() => formatDate(new Date()));
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const todayDate = formatDate(new Date());
+  const recentDates = React.useMemo(() => Array.from({ length: 31 }, (_item, index) => dateDaysAgoBrasilia(index)), []);
 
   function handleMealAdded() {
     setTimeout(() => onMealAdded?.(), 0);
+  }
+
+  function openManualMeal() {
+    setActionMenuOpen(false);
+    setAddModal(true);
+  }
+
+  function openVoiceMeal() {
+    setActionMenuOpen(false);
+    setVoiceModal(true);
+  }
+
+  function openPhotoMeal() {
+    setActionMenuOpen(false);
+    setPhotoModal(true);
+  }
+
+  function openWater() {
+    setActionMenuOpen(false);
+    onWaterOpen?.();
   }
 
   React.useEffect(() => {
@@ -1877,9 +2076,40 @@ export function AddMealScreen({
     }, user.id);
   }, [user]);
 
+  React.useEffect(() => {
+    let active = true;
+    async function loadRecentLogs() {
+      if (!user) {
+        setRecentLogs([]);
+        return;
+      }
+      try {
+        const cached = await getCachedRecentDailyLogs(user.id, 31);
+        if (active && cached.length > 0) setRecentLogs(cached);
+
+        if (isFirebaseConfigured && user.id !== 'dev_user') {
+          const remote = await getRecentDailyLogs(user.id, 31);
+          if (active) setRecentLogs(mergeDailyLogs(remote, cached));
+        } else if (active) {
+          setRecentLogs(mergeDailyLogs(todayLog ? [todayLog] : [], cached));
+        }
+      } catch (error) {
+        console.warn('Failed to load recent meal logs', error);
+        if (active) setRecentLogs(todayLog ? [todayLog] : []);
+      }
+    }
+
+    void loadRecentLogs();
+    return () => {
+      active = false;
+    };
+  }, [user?.id, todayLog?.updatedAt]);
+
   const handleCreateFood = useCallback(async (foodName: string, preferredUnit: QuantityUnit) => {
     if (!user) throw new Error('Missing user');
-    const existing = findAnyFood(foodName, customFoods);
+    const existing = isCompositeFoodQuery(foodName)
+      ? findExactFood(foodName, customFoods)
+      : findAnyFood(foodName, customFoods);
     if (existing) return existing;
 
     const food = markAiFood(await generateFoodNutrition(foodName, preferredUnit));
@@ -2070,7 +2300,14 @@ export function AddMealScreen({
     removeEntry(entry.id);
   }
 
-  const entries = todayLog?.entries ?? [];
+  const logsByDate = React.useMemo(() => {
+    const byDate = new Map(recentLogs.map((log) => [log.date, log]));
+    if (todayLog) byDate.set(todayLog.date, todayLog);
+    return byDate;
+  }, [recentLogs, todayLog]);
+  const selectedLog = logsByDate.get(selectedDate) ?? (selectedDate === todayDate ? todayLog : undefined);
+  const entries = selectedLog?.entries ?? [];
+  const isViewingToday = selectedDate === todayDate;
   const groupedEntries = React.useMemo(() => {
     const periodOrder = new Map(MEAL_PERIODS.map((period, index) => [period.key, index]));
     const groups = new Map<string, {
@@ -2118,21 +2355,95 @@ export function AddMealScreen({
           <Text style={styles.headerTitle}>Registrar refeição</Text>
           {pendingSyncCount > 0 ? <Text style={styles.headerSubtitle}>Sincronização pendente</Text> : null}
         </View>
-        {pendingSyncCount > 0 ? (
-          <View style={styles.pendingPill}>
-            <MaterialIcons name="cloud-off" size={16} color={Colors.warning} />
-            <Text style={styles.pendingPillText}>{pendingSyncCount}</Text>
-          </View>
-        ) : (
-          <View style={styles.syncedPill}>
-            <MaterialIcons name="cloud-done" size={16} color={Colors.green600} />
-          </View>
-        )}
+        <View style={styles.headerActions}>
+          {pendingSyncCount > 0 ? (
+            <View style={styles.pendingPill}>
+              <MaterialIcons name="cloud-off" size={16} color={Colors.warning} />
+              <Text style={styles.pendingPillText}>{pendingSyncCount}</Text>
+            </View>
+          ) : (
+            <View style={styles.syncedPill}>
+              <MaterialIcons name="cloud-done" size={16} color={Colors.green600} />
+            </View>
+          )}
+          <TouchableOpacity
+            style={[styles.menuButton, actionMenuOpen && styles.menuButtonActive]}
+            onPress={() => setActionMenuOpen((open) => !open)}
+            accessibilityLabel="Abrir menu de ações"
+          >
+            <MaterialIcons name="menu" size={24} color={actionMenuOpen ? Colors.green600 : Colors.gray600} />
+          </TouchableOpacity>
+          {actionMenuOpen ? (
+            <View style={styles.actionMenu}>
+              <TouchableOpacity style={styles.actionMenuItem} onPress={openManualMeal}>
+                <View style={[styles.actionIcon, styles.actionIconManual]}>
+                  <MaterialIcons name="edit-note" size={20} color={Colors.white} />
+                </View>
+                <Text style={styles.actionMenuText}>Adicionar refeição</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.actionMenuItem} onPress={openWater} disabled={!onWaterOpen}>
+                <View style={[styles.actionIcon, styles.actionIconWater]}>
+                  <MaterialIcons name="local-drink" size={20} color={Colors.white} />
+                </View>
+                <Text style={styles.actionMenuText}>Adicionar água</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.actionMenuItem} onPress={openVoiceMeal}>
+                <View style={[styles.actionIcon, styles.actionIconVoice]}>
+                  <MaterialIcons name="mic" size={20} color={Colors.purpleD} />
+                </View>
+                <Text style={styles.actionMenuText}>Adicionar por voz</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.actionMenuItem} onPress={openPhotoMeal}>
+                <View style={[styles.actionIcon, styles.actionIconPhoto]}>
+                  <MaterialIcons name="photo-camera" size={20} color={Colors.green600} />
+                </View>
+                <Text style={styles.actionMenuText}>Adicionar por foto</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+        </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scroll}>
+      {actionMenuOpen ? (
+        <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setActionMenuOpen(false)} />
+      ) : null}
+
+      <ScrollView contentContainerStyle={styles.scroll} onScrollBeginDrag={() => setActionMenuOpen(false)}>
+        <View style={styles.datePanel}>
+          <View style={styles.datePanelHeader}>
+            <View>
+              <Text style={styles.sectionLabel}>Histórico de refeições</Text>
+              <Text style={styles.datePanelTitle}>{isViewingToday ? 'Hoje' : formatLogDateLabel(selectedDate)}</Text>
+            </View>
+            <View style={styles.dateTotalPill}>
+              <Text style={styles.dateTotalKcal}>{Math.round(selectedLog?.totalNutrition?.kcal ?? 0)}</Text>
+              <Text style={styles.dateTotalLabel}>kcal</Text>
+            </View>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={styles.dateChips}>
+              {recentDates.map((date) => {
+                const chip = formatDateChip(date);
+                const active = selectedDate === date;
+                const hasLog = logsByDate.has(date);
+                return (
+                  <TouchableOpacity
+                    key={date}
+                    style={[styles.dateChip, active && styles.dateChipActive]}
+                    onPress={() => setSelectedDate(date)}
+                  >
+                    <Text style={[styles.dateChipWeekday, active && styles.dateChipTextActive]}>{date === todayDate ? 'hoje' : chip.weekday}</Text>
+                    <Text style={[styles.dateChipDay, active && styles.dateChipTextActive]}>{chip.day}</Text>
+                    <View style={[styles.dateChipDot, hasLog && styles.dateChipDotFilled, active && styles.dateChipDotActive]} />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </ScrollView>
+        </View>
+
         {/* Saved meals */}
-        {savedMeals.length > 0 && (
+        {isViewingToday && savedMeals.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>Refeições salvas</Text>
             {savedMeals.map((m) => (
@@ -2152,11 +2463,10 @@ export function AddMealScreen({
           </>
         )}
 
-        {/* Today log */}
-        <Text style={styles.sectionLabel}>Registro de hoje ({entries.length})</Text>
+        <Text style={styles.sectionLabel}>{isViewingToday ? 'Registro de hoje' : 'Registro do dia'} ({entries.length})</Text>
         {entries.length === 0 ? (
           <View style={styles.emptyLog}>
-            <Text style={styles.emptyLogText}>Nenhum alimento registrado</Text>
+            <Text style={styles.emptyLogText}>Nenhum alimento registrado nesta data</Text>
           </View>
         ) : (
           <View style={styles.logList}>
@@ -2168,28 +2478,13 @@ export function AddMealScreen({
                   <Text style={logStyle.groupCount}>{group.entries.length}</Text>
                 </View>
                 {group.entries.map((entry) => (
-                  <TodayEntry key={entry.id} entry={entry} onDelete={() => handleDeleteEntry(entry)} />
+                  <TodayEntry key={entry.id} entry={entry} onDelete={isViewingToday ? () => handleDeleteEntry(entry) : undefined} />
                 ))}
               </View>
             ))}
           </View>
         )}
       </ScrollView>
-
-      <View style={[styles.fabDock, Platform.OS === 'web' && styles.fabDockFixed, { bottom: fabBottomOffset }]}>
-        <TouchableOpacity style={[styles.mealFab, styles.waterFab]} onPress={onWaterOpen}>
-          <MaterialIcons name="local-drink" size={23} color={Colors.white} />
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.mealFab, styles.manualFab]} onPress={() => setAddModal(true)}>
-          <MaterialIcons name="edit-note" size={24} color={Colors.white} />
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.mealFab, styles.voiceFab]} onPress={() => setVoiceModal(true)}>
-          <MaterialIcons name="mic" size={23} color={Colors.purpleD} />
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.mealFab, styles.photoFab]} onPress={() => setPhotoModal(true)}>
-          <MaterialIcons name="photo-camera" size={23} color={Colors.green600} />
-        </TouchableOpacity>
-      </View>
 
       <AddMealModal visible={addModal} onClose={() => setAddModal(false)} onAdded={handleMealAdded} customFoods={customFoods} onCreateFood={handleCreateFood} />
       <VoiceModal   visible={voiceModal} onClose={() => setVoiceModal(false)} onConfirm={handleVoiceConfirm} customFoods={customFoods} onCreateFood={handleCreateFood} />
@@ -2205,38 +2500,43 @@ export function AddMealScreen({
 
 const styles = StyleSheet.create({
   safe:        { flex: 1, backgroundColor: Colors.bg },
-  headerBar:   { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', backgroundColor: Colors.white, padding: Spacing.base, borderBottomWidth: 1, borderBottomColor: Colors.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm },
+  headerBar:   { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', backgroundColor: Colors.white, padding: Spacing.base, borderBottomWidth: 1, borderBottomColor: Colors.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm, zIndex: 20 },
   headerTitle: { fontSize: Typography.lg, fontWeight: Typography.bold },
   headerSubtitle: { marginTop: 2, fontSize: Typography.xs, color: Colors.warning, fontWeight: Typography.semibold },
+  headerActions: { position: 'relative', flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   pendingPill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.fatL, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, paddingVertical: 6 },
   pendingPillText: { color: Colors.warning, fontSize: Typography.xs, fontWeight: Typography.bold },
   syncedPill: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50 },
-  scroll:      { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', padding: Spacing.base, paddingBottom: 150 },
-
-  fabDock: {
-    position: 'absolute',
-    right: Spacing.base,
-    alignItems: 'flex-end',
-    gap: Spacing.sm,
-  },
-  fabDockFixed: {
-    position: 'fixed' as any,
-  },
-  mealFab: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    ...Shadows.md,
-  },
-  waterFab: { backgroundColor: Colors.info, borderColor: Colors.info },
-  manualFab: { backgroundColor: Colors.green400, borderColor: Colors.green400 },
-  voiceFab: { backgroundColor: Colors.purpleL, borderColor: Colors.purple },
-  photoFab: { backgroundColor: Colors.green50, borderColor: Colors.green400 },
+  menuButton: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.gray50, borderWidth: 1, borderColor: Colors.border },
+  menuButtonActive: { backgroundColor: Colors.green50, borderColor: Colors.green400 },
+  actionMenu: { position: 'absolute', top: 48, right: 0, width: 236, backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingVertical: 6, zIndex: 30, elevation: 8, shadowColor: '#000', shadowOpacity: 0.14, shadowRadius: 12, shadowOffset: { width: 0, height: 6 } },
+  actionMenuItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.sm, paddingVertical: 10 },
+  actionIcon: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
+  actionIconManual: { backgroundColor: Colors.green400, borderColor: Colors.green400 },
+  actionIconWater: { backgroundColor: Colors.info, borderColor: Colors.info },
+  actionIconVoice: { backgroundColor: Colors.purpleL, borderColor: Colors.purple },
+  actionIconPhoto: { backgroundColor: Colors.green50, borderColor: Colors.green400 },
+  actionMenuText: { flex: 1, fontSize: Typography.sm, fontWeight: Typography.semibold, color: Colors.gray600 },
+  menuBackdrop: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 10 },
+  scroll:      { width: '100%', maxWidth: Platform.OS === 'web' ? 760 : undefined, alignSelf: 'center', padding: Spacing.base, paddingBottom: Spacing.xl },
 
   sectionLabel: { fontSize: Typography.xs, fontWeight: Typography.bold, color: Colors.gray400, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: Spacing.sm },
+
+  datePanel: { backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.sm },
+  datePanelHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: Spacing.sm, marginBottom: Spacing.sm },
+  datePanelTitle: { fontSize: Typography.base, fontWeight: Typography.bold, color: Colors.gray800, textTransform: 'capitalize' },
+  dateTotalPill: { minWidth: 68, alignItems: 'center', borderRadius: Radius.md, backgroundColor: Colors.green50, paddingHorizontal: Spacing.sm, paddingVertical: 7 },
+  dateTotalKcal: { fontSize: Typography.md, fontWeight: Typography.bold, color: Colors.green600 },
+  dateTotalLabel: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -2 },
+  dateChips: { flexDirection: 'row', gap: Spacing.sm, paddingRight: Spacing.sm },
+  dateChip: { width: 56, minHeight: 72, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.white, alignItems: 'center', justifyContent: 'center', paddingVertical: 8 },
+  dateChipActive: { borderColor: Colors.green400, backgroundColor: Colors.green50 },
+  dateChipWeekday: { fontSize: 10, color: Colors.gray400, textTransform: 'uppercase', fontWeight: Typography.semibold },
+  dateChipDay: { fontSize: Typography.lg, color: Colors.gray800, fontWeight: Typography.bold, marginTop: 2 },
+  dateChipTextActive: { color: Colors.green600 },
+  dateChipDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: Colors.border, marginTop: 5 },
+  dateChipDotFilled: { backgroundColor: Colors.green400 },
+  dateChipDotActive: { backgroundColor: Colors.green600 },
 
   savedCard: {
     backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1,
@@ -2280,12 +2580,12 @@ const logStyle = StyleSheet.create({
 
 const modal = StyleSheet.create({
   bg:       { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.4)' },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
   sheet:    { height: '92%', width: '100%', maxWidth: Platform.OS === 'web' ? 720 : undefined, alignSelf: 'center', backgroundColor: Colors.white, borderTopLeftRadius: Radius.xxl, borderTopRightRadius: Radius.xxl, padding: Spacing.base, paddingBottom: Spacing.lg },
   handle:   { width: 40, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.base, flexShrink: 0 },
   modalHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: Spacing.sm, marginBottom: Spacing.base, flexShrink: 0 },
   body: { flex: 1, minHeight: 0 },
-  bodyContent: { paddingBottom: Spacing.sm },
+  bodyContent: { paddingBottom: Spacing.lg },
   title:    { fontSize: Typography.lg, fontWeight: Typography.bold },
   subtitle: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 3 },
   closePill: { backgroundColor: Colors.gray50, borderRadius: Radius.full, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderWidth: 1, borderColor: Colors.border },
@@ -2303,6 +2603,9 @@ const modal = StyleSheet.create({
   foodOptionActive: { backgroundColor: Colors.green50 },
   foodEmoji: { fontSize: 22, width: 28, textAlign: 'center', marginTop: 2 },
   foodInfo: { flex: 1 },
+  foodActions: { alignItems: 'center', justifyContent: 'center', gap: 8, marginLeft: 4 },
+  foodAddButton: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green600 },
+  foodAddButtonDisabled: { opacity: 0.5 },
   foodName: { fontSize: Typography.sm, fontWeight: Typography.semibold, color: Colors.gray800 },
   foodNameActive: { color: Colors.green600 },
   foodUnit: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
@@ -2313,29 +2616,28 @@ const modal = StyleSheet.create({
   aiCreateTitle: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.green600 },
   aiCreateText: { fontSize: Typography.xs, color: Colors.gray600, marginTop: 2, lineHeight: 16 },
   bottomPanel: { flexShrink: 0, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.white },
-  qtyRow: { flexDirection: 'row', gap: Spacing.sm, alignItems: 'flex-end' },
-  qtyField: { width: 120 },
-  qtyHintBox: { flex: 1, backgroundColor: Colors.gray50, borderRadius: Radius.sm, padding: Spacing.sm, marginBottom: Spacing.sm },
-  qtyHintTitle: { fontSize: Typography.xs, fontWeight: Typography.bold, color: Colors.gray600, marginBottom: 2 },
-  qtyHint: { fontSize: Typography.xs, color: Colors.gray400, lineHeight: 16 },
-  unitWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: Spacing.sm },
-  unitChip: { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.full, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, backgroundColor: Colors.white },
+  emptySelection: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, padding: Spacing.md, marginBottom: Spacing.sm, backgroundColor: Colors.green50 },
+  emptySelectionText: { flex: 1, fontSize: Typography.sm, color: Colors.gray600, lineHeight: 18, fontWeight: Typography.semibold },
+  unitChip: { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, paddingVertical: 8, backgroundColor: Colors.white },
   unitChipActive: { borderColor: Colors.green400, backgroundColor: Colors.green50 },
-  unitChipText: { fontSize: Typography.sm, color: Colors.gray600, fontWeight: Typography.semibold },
+  unitChipText: { fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.semibold },
   unitChipTextActive: { color: Colors.green600 },
-  btnSelectFood: { borderWidth: 1, borderColor: Colors.green400, backgroundColor: Colors.green50, borderRadius: Radius.md, paddingVertical: 12, alignItems: 'center', marginBottom: Spacing.sm },
-  btnSelectFoodText: { color: Colors.green600, fontSize: Typography.sm, fontWeight: Typography.bold },
   selectedBox: { borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, marginBottom: Spacing.sm, overflow: 'hidden' },
   selectedHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.sm, paddingVertical: 8, backgroundColor: Colors.gray50 },
   selectedTitle: { fontSize: Typography.xs, fontWeight: Typography.bold, color: Colors.gray600, textTransform: 'uppercase', letterSpacing: 0.4 },
   selectedTotal: { fontSize: Typography.xs, fontWeight: Typography.bold, color: Colors.green600 },
-  selectedItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.white },
+  selectedItem: { padding: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.white },
+  selectedTopRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   selectedEmoji: { fontSize: 20, width: 26, textAlign: 'center' },
   selectedInfo: { flex: 1 },
   selectedName: { fontSize: Typography.sm, fontWeight: Typography.semibold, color: Colors.gray800 },
   selectedMeta: { marginTop: 2, fontSize: Typography.xs, color: Colors.gray400 },
   selectedRemove: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.gray50 },
-  selectedRemoveText: { color: Colors.gray400, fontSize: Typography.sm, fontWeight: Typography.bold },
+  selectedControls: { flexDirection: 'row', gap: Spacing.sm, alignItems: 'flex-start', marginTop: Spacing.sm },
+  selectedQtyField: { width: 82 },
+  inlineLabel: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.bold, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 },
+  selectedQtyInput: { height: 38, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, fontSize: Typography.sm, color: Colors.gray800, backgroundColor: Colors.white },
+  selectedUnits: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingTop: 18 },
   periodBox: { marginBottom: Spacing.sm },
   periodRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   periodChip: { flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, paddingVertical: 8, backgroundColor: Colors.white },
@@ -2346,7 +2648,7 @@ const modal = StyleSheet.create({
   nutritionSummary: { marginTop: 4, fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.semibold },
   nutritionMicroSummary: { marginTop: 2, fontSize: Typography.xs, color: Colors.gray400 },
 
-  actions:     { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.white, flexShrink: 0 },
+  actions:     { flexDirection: 'row', gap: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.white, flexShrink: 0 },
   btnCancel:   { flex: 1, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingVertical: 13, alignItems: 'center' },
   btnCancelText: { fontSize: Typography.base, color: Colors.gray600 },
   btnAdd:      { flex: 2, backgroundColor: Colors.green400, borderRadius: Radius.md, paddingVertical: 13, alignItems: 'center' },
