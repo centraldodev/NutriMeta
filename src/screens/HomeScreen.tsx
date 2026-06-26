@@ -239,19 +239,6 @@ function FoodPlanCard({
           </TouchableOpacity>
         </View>
       ))}
-      <Text style={styles.shoppingTitle}>Lista de compras</Text>
-      {shoppingList.length === 0 ? (
-        <Text style={styles.foodPlanNotes}>O nutricionista ainda não adicionou itens de compra.</Text>
-      ) : (
-        shoppingList.map((item) => (
-          <View key={`${item.name}_${item.quantity}_${item.unit ?? ''}`} style={styles.shoppingItem}>
-            <MaterialIcons name="check-box-outline-blank" size={18} color={Colors.green600} />
-            <Text style={styles.shoppingText}>
-              {item.name}{item.quantity ? ` - ${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : ''}
-            </Text>
-          </View>
-        ))
-      )}
     </View>
   );
 }
@@ -1007,6 +994,7 @@ export function HomeScreen() {
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+        {/* 1. Anel de calorias + resumo rápido */}
         <View style={styles.ringSection}>
           <View style={styles.ringWrap}>
             <RingChart pct={kcalPct} color={Colors.green400} />
@@ -1033,7 +1021,7 @@ export function HomeScreen() {
           </View>
         </View>
 
-        <NutritionGoalTable rows={nutritionGoalRows} totals={totals} waterMl={waterMl} />
+        {/* 2. Plano alimentar (só quando existir) */}
         {latestFoodPlan ? (
           <FoodPlanCard
             plan={latestFoodPlan}
@@ -1041,6 +1029,9 @@ export function HomeScreen() {
             onCompleteMeal={handleCompleteFoodPlanMeal}
           />
         ) : null}
+
+        {/* 3. Tabela de metas e nutrientes */}
+        <NutritionGoalTable rows={nutritionGoalRows} totals={totals} waterMl={waterMl} />
       </ScrollView>
 
       <SettingsModal visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
