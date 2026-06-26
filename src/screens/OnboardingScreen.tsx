@@ -1,12 +1,12 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
-  StyleSheet, ScrollView, Animated, Alert, Platform, ActivityIndicator,
+  StyleSheet, ScrollView, Animated, Alert, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, Radius, Shadows } from '../constants/theme';
-import { UserProfile, BiologicalSex, GoalType, ActivityLevel, MacroGoals } from '../types';
+import { UserProfile, BiologicalSex, GoalType, ActivityLevel } from '../types';
 import { useStore } from '../store';
 import { calcMacroGoals, formatGrams } from '../utils/nutrition';
 import {
@@ -21,9 +21,7 @@ import {
   validateProfileBasics,
 } from '../utils/profileValidation';
 import { saveUserProfile } from '../services/authService';
-import { refineDietGoals } from '../services/goalAiService';
 import { isFirebaseConfigured } from '../config';
-import { isAiLimitError, showAiLimitAlert } from '../utils/aiErrors';
 
 interface Props {
   onComplete: () => void;
@@ -60,9 +58,6 @@ export function OnboardingScreen({ onComplete }: Props) {
   const [goal,    setGoal]        = useState<GoalType>('maintain');
   const [activity,setActivity]    = useState<ActivityLevel>(1.55);
   const [saving,  setSaving]      = useState(false);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiGoals, setAiGoals] = useState<MacroGoals | null>(null);
-  const [aiReason, setAiReason] = useState('');
 
   useEffect(() => {
     if (!name.trim() && user?.name) {
@@ -115,7 +110,7 @@ export function OnboardingScreen({ onComplete }: Props) {
       updatedAt:        new Date(),
     };
 
-    const goals = aiGoals ?? calcMacroGoals(profile);
+    const goals = calcMacroGoals(profile);
 
     try {
       if (isFirebaseConfigured && user.id !== 'dev_user') {
@@ -143,31 +138,7 @@ export function OnboardingScreen({ onComplete }: Props) {
       showLimits: true,
     }, createdAt: new Date(), updatedAt: new Date(),
   };
-  const basePreviewGoals = calcMacroGoals(previewProfile);
-  const previewGoals = aiGoals ?? basePreviewGoals;
-
-  useEffect(() => {
-    setAiGoals(null);
-    setAiReason('');
-  }, [age, weight, height, sex, goal, activity]);
-
-  async function handleRefineGoalsWithAi() {
-    setAiLoading(true);
-    try {
-      const recommendation = await refineDietGoals(previewProfile, basePreviewGoals);
-      setAiGoals(recommendation.goals);
-      setAiReason(recommendation.rationale);
-    } catch (e) {
-      console.warn('AI onboarding goal refinement failed', e);
-      if (isAiLimitError(e)) {
-        showAiLimitAlert();
-        return;
-      }
-      Alert.alert('IA indisponível', 'Não consegui refinar suas metas agora. Você pode continuar com a meta calculada.');
-    } finally {
-      setAiLoading(false);
-    }
-  }
+  const previewGoals = calcMacroGoals(previewProfile);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -241,15 +212,6 @@ export function OnboardingScreen({ onComplete }: Props) {
               <GoalRow emoji="🍬" label="Açúcar máx."  value={formatGrams(previewGoals.sugar)}   color={Colors.purple}  />
               <GoalRow emoji="🧂" label="Sódio máx."   value={`${previewGoals.sodium} mg`}       color={Colors.warning} />
             </View>
-            <TouchableOpacity style={[styles.aiBtn, aiLoading && styles.btnDisabled]} onPress={handleRefineGoalsWithAi} disabled={aiLoading}>
-              {aiLoading ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.aiBtnText}>{aiGoals ? 'Refinar novamente com IA' : 'Refinar com IA'}</Text>}
-            </TouchableOpacity>
-            {aiReason ? (
-              <View style={styles.aiReasonBox}>
-                <Text style={styles.aiReasonTitle}>Sugestão da IA</Text>
-                <Text style={styles.aiReasonText}>{aiReason}</Text>
-              </View>
-            ) : null}
             <Text style={styles.hint}>Você pode ajustar essas metas em Configurações a qualquer momento.</Text>
           </>
         )}
@@ -262,9 +224,9 @@ export function OnboardingScreen({ onComplete }: Props) {
           </TouchableOpacity>
         )}
         <TouchableOpacity
-          style={[styles.btnNext, (saving || aiLoading) && styles.btnDisabled]}
+          style={[styles.btnNext, saving && styles.btnDisabled]}
           onPress={goNext}
-          disabled={saving || aiLoading}
+          disabled={saving}
         >
           <Text style={styles.btnNextText}>
             {step === 'result' ? (saving ? 'Salvando...' : 'Começar! 🚀') : 'Continuar'}
@@ -366,25 +328,6 @@ const styles = StyleSheet.create({
   goalLabel:  { fontSize: Typography.md, color: Colors.gray800 },
   goalValue:  { fontSize: Typography.md, fontWeight: Typography.bold, color: Colors.green600 },
   hint:       { fontSize: Typography.xs, color: Colors.gray400, textAlign: 'center', lineHeight: 18 },
-  aiBtn: {
-    backgroundColor: Colors.green600,
-    borderRadius: Radius.md,
-    paddingVertical: Spacing.md,
-    alignItems: 'center',
-    marginBottom: Spacing.sm,
-  },
-  aiBtnText: { color: Colors.white, fontSize: Typography.base, fontWeight: Typography.bold },
-  aiReasonBox: {
-    backgroundColor: Colors.green50,
-    borderWidth: 1,
-    borderColor: Colors.green100,
-    borderRadius: Radius.md,
-    padding: Spacing.sm,
-    marginBottom: Spacing.md,
-  },
-  aiReasonTitle: { fontSize: Typography.xs, color: Colors.green600, fontWeight: Typography.bold, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 3 },
-  aiReasonText: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 19 },
-
   footer:   { width: '100%', maxWidth: Platform.OS === 'web' ? 620 : undefined, alignSelf: 'center', flexDirection: 'row', padding: Spacing.base, gap: Spacing.sm, backgroundColor: Colors.white, borderTopWidth: 1, borderTopColor: Colors.border },
   btnBack:  { paddingVertical: Spacing.md, paddingHorizontal: Spacing.base, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
   btnBackText: { fontSize: Typography.base, color: Colors.gray600 },

@@ -56,6 +56,17 @@ const DEFAULT_GOALS: MacroGoals = {
   water: 2500,
   sugar: 50,
   sodium: 2300,
+  calcium: 1000,
+  iron: 18,
+  potassium: 2600,
+  magnesium: 320,
+  zinc: 8,
+  vitaminA: 700,
+  vitaminC: 75,
+  vitaminD: 15,
+  vitaminE: 15,
+  vitaminB12: 2.4,
+  folate: 400,
 };
 
 type NutritionGoalMode = 'target' | 'limit';
@@ -244,6 +255,7 @@ function FoodPlanCard({
 }
 
 function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  type BasicGoalKey = 'kcal' | 'protein' | 'carbs' | 'fat' | 'fiber' | 'water' | 'sugar' | 'sodium';
   const user = useStore((s) => s.user);
   const profile = useStore((s) => s.profile);
   const goals = useStore(selectGoals);
@@ -259,7 +271,7 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
   const [goalType, setGoalType] = useState<GoalType>('maintain');
   const [activity, setActivity] = useState<ActivityLevel>(1.55);
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>();
-  const [goalInputs, setGoalInputs] = useState<Record<keyof MacroGoals, string>>({
+  const [goalInputs, setGoalInputs] = useState<Record<BasicGoalKey, string>>({
     kcal: '',
     protein: '',
     carbs: '',
@@ -294,7 +306,7 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
     });
   }, [visible, goals, profile, user]);
 
-  function updateGoalInput(key: keyof MacroGoals, value: string) {
+  function updateGoalInput(key: BasicGoalKey, value: string) {
     setGoalInputs((current) => ({ ...current, [key]: value }));
   }
 
@@ -372,6 +384,7 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
     if (!nextProfile) return;
 
     const nextGoals: MacroGoals = {
+      ...(profile?.macroGoals ?? goals ?? {}),
       kcal: Math.round(parseNumber(goalInputs.kcal, DEFAULT_GOALS.kcal)),
       protein: Math.round(parseNumber(goalInputs.protein, DEFAULT_GOALS.protein)),
       carbs: Math.round(parseNumber(goalInputs.carbs, DEFAULT_GOALS.carbs)),

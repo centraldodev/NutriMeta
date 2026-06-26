@@ -6,8 +6,6 @@ import {
   collection,
   query,
   where,
-  orderBy,
-  limit,
   getDocs,
   onSnapshot,
   runTransaction,
@@ -35,6 +33,18 @@ function dailyLogId(userId: string, date: string) {
   return `${userId}_${date}`;
 }
 
+function readDate(value: unknown, fallback = new Date()): Date {
+  if (value instanceof Date) return value;
+  if (value && typeof (value as { toDate?: unknown }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return fallback;
+}
+
 function sumEntryWater(entries: MealEntry[]): number {
   return entries.reduce((sum, entry) => sum + (entry.waterMl ?? 0), 0);
 }
@@ -48,10 +58,10 @@ export async function getDailyLog(
   const d = snap.data();
   return {
     ...d,
-    updatedAt: d.updatedAt?.toDate() ?? new Date(),
+    updatedAt: readDate(d.updatedAt),
     entries: (d.entries ?? []).map((e: MealEntry) => ({
       ...e,
-      addedAt: (e.addedAt as unknown as { toDate(): Date })?.toDate?.() ?? new Date(),
+      addedAt: readDate(e.addedAt),
     })),
   } as DailyLog;
 }
@@ -69,10 +79,10 @@ export async function getRecentDailyLogs(
     const d = docSnap.data();
     return {
       ...d,
-      updatedAt: d.updatedAt?.toDate() ?? new Date(),
+      updatedAt: readDate(d.updatedAt),
       entries: (d.entries ?? []).map((e: MealEntry) => ({
         ...e,
-        addedAt: (e.addedAt as unknown as { toDate(): Date })?.toDate?.() ?? new Date(),
+        addedAt: readDate(e.addedAt),
       })),
     } as DailyLog;
   }).sort((a, b) => b.date.localeCompare(a.date)).slice(0, days);
@@ -89,10 +99,10 @@ export function subscribeDailyLog(
     const d = snap.data();
     onUpdate({
       ...d,
-      updatedAt: d.updatedAt?.toDate() ?? new Date(),
+      updatedAt: readDate(d.updatedAt),
       entries: (d.entries ?? []).map((e: MealEntry) => ({
         ...e,
-        addedAt: (e.addedAt as any)?.toDate?.() ?? new Date(),
+        addedAt: readDate(e.addedAt),
       })),
     } as DailyLog);
   });
@@ -260,19 +270,20 @@ export async function addWaterIntake(
 export async function getSavedMeals(userId: string): Promise<SavedMeal[]> {
   const q = query(
     collection(db, COLLECTIONS.savedMeals),
-    where('userId', '==', userId),
-    orderBy('usageCount', 'desc'),
-    limit(20)
+    where('userId', '==', userId)
   );
   const snap = await getDocs(q);
   return snap.docs.map((d) => {
     const data = d.data();
     return {
       ...data,
-      createdAt: data.createdAt?.toDate() ?? new Date(),
-      updatedAt: data.updatedAt?.toDate() ?? new Date(),
+      createdAt: readDate(data.createdAt),
+      updatedAt: readDate(data.updatedAt),
     } as SavedMeal;
-  }).filter((meal) => !(meal as SavedMeal & { deleted?: boolean }).deleted);
+  })
+    .filter((meal) => !(meal as SavedMeal & { deleted?: boolean }).deleted)
+    .sort((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0))
+    .slice(0, 20);
 }
 
 export async function saveMeal(

@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Colors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
+import { FoodIcon } from '../components/FoodIcon';
 import { isFirebaseConfigured } from '../config';
 import { getRecentDailyLogs } from '../services/nutritionService';
 import { getCachedRecentDailyLogs } from '../services/dailyLogStorage';
@@ -29,6 +30,17 @@ const DEFAULT_GOALS: MacroGoals = {
   water: 2500,
   sugar: 50,
   sodium: 2300,
+  calcium: 1000,
+  iron: 18,
+  potassium: 2600,
+  magnesium: 320,
+  zinc: 8,
+  vitaminA: 700,
+  vitaminC: 75,
+  vitaminD: 15,
+  vitaminE: 15,
+  vitaminB12: 2.4,
+  folate: 400,
 };
 
 function averageNutrition(logs: DailyLog[]): FoodNutrition {
@@ -534,7 +546,9 @@ export function AnalysisScreen() {
                     selectedWeekTopFoods.map((item, index) => (
                       <View key={item.name} style={styles.topFoodRow}>
                         <Text style={styles.topFoodRank}>{index + 1}</Text>
-                        <Text style={styles.topFoodEmoji}>{item.emoji}</Text>
+                        <View style={styles.topFoodEmoji}>
+                          <FoodIcon name={item.name} emoji={item.emoji} size={18} />
+                        </View>
                         <View style={styles.topFoodInfo}>
                           <Text style={styles.topFoodName}>{item.name}</Text>
                           <Text style={styles.topFoodMeta}>{item.count}x · {item.kcal} kcal · {item.sodium}mg sódio</Text>
@@ -624,7 +638,7 @@ const styles = StyleSheet.create({
   distributionMeta: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 4 },
   topFoodRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, paddingVertical: Spacing.sm },
   topFoodRank: { width: 22, height: 22, borderRadius: 11, backgroundColor: Colors.green50, color: Colors.green600, textAlign: 'center', lineHeight: 22, fontSize: Typography.xs, fontWeight: Typography.bold },
-  topFoodEmoji: { width: 26, fontSize: 20, textAlign: 'center' },
+  topFoodEmoji: { width: 34, alignItems: 'center' },
   topFoodInfo: { flex: 1 },
   topFoodName: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray800 },
   topFoodMeta: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },

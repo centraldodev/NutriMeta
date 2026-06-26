@@ -49,6 +49,17 @@ export interface MacroGoals {
   water: number;       // ml
   sugar: number;       // g, daily limit
   sodium: number;      // mg, daily limit
+  calcium?: number;    // mg
+  iron?: number;       // mg
+  potassium?: number;  // mg
+  magnesium?: number;  // mg
+  zinc?: number;       // mg
+  vitaminA?: number;   // mcg RAE
+  vitaminC?: number;   // mg
+  vitaminD?: number;   // mcg
+  vitaminE?: number;   // mg
+  vitaminB12?: number; // mcg
+  folate?: number;     // mcg
 }
 
 // ─── Food & Meals ────────────────────────────────────────────────────────────

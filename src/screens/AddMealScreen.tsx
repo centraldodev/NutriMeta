@@ -43,11 +43,6 @@ import {
 } from "../services/customFoodService";
 import { generateFoodNutrition } from "../services/foodNutritionAiService";
 import {
-  enrichGlobalFood,
-  hasExpandedNutrition,
-  mergeExpandedFoodNutrition,
-} from "../services/globalFoodEnrichmentService";
-import {
   parseQuantityFromText,
   calculateNutrition,
   UNIT_LABELS,
@@ -72,12 +67,9 @@ import {
 } from "../utils/nutrition";
 import { isAiLimitError, showAiLimitAlert } from "../utils/aiErrors";
 import { isFirebaseConfigured } from "../config";
+import { FoodIcon } from "../components/FoodIcon";
 
 declare const require: (name: string) => any;
-
-const enrichedFoodIdsThisSession = new Set<string>();
-const ENRICH_FOODS_PER_LOAD = 8;
-let foodEnrichmentPaused = false;
 
 // No navegador, absolute acompanha o contêiner da página.
 // fixed mantém o FAB preso à janela; no Android/iOS, absolute é o correto.
@@ -921,9 +913,11 @@ function AddMealModal({
   const [saving, setSaving] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const [addingFoodId, setAddingFoodId] = useState<string | null>(null);
+  const [listeningSearch, setListeningSearch] = useState(false);
   const [foodItem, setFoodItem] = useState<FoodItem | null>(null);
   const [selectedFoods, setSelectedFoods] = useState<ManualMealSelection[]>([]);
   const selectedFoodsRef = React.useRef<ManualMealSelection[]>([]);
+  const speechModule = React.useMemo(loadSpeechRecognitionModule, []);
   const [mealPeriod, setMealPeriod] = useState<MealPeriod>(
     getDefaultMealPeriod(),
   );
@@ -963,11 +957,49 @@ function AddMealModal({
 
   React.useEffect(() => {
     if (!visible) return;
+    speechModule?.stop?.();
+    setListeningSearch(false);
     setFoodQuery("");
     setFoodItem(null);
     updateSelectedFoods([]);
     setMealPeriod(getDefaultMealPeriod());
   }, [visible]);
+
+  React.useEffect(() => {
+    if (!speechModule) return undefined;
+
+    const startSub = speechModule.addListener("start", () =>
+      setListeningSearch(true),
+    );
+    const endSub = speechModule.addListener("end", () =>
+      setListeningSearch(false),
+    );
+    const resultSub = speechModule.addListener("result", (event) => {
+      const transcript = event.results[0]?.transcript?.trim() ?? "";
+      if (transcript) {
+        setFoodQuery(transcript);
+        setFoodItem(null);
+      }
+    });
+    const errorSub = speechModule.addListener("error", (event) => {
+      setListeningSearch(false);
+      console.warn("Meal search voice error", event);
+    });
+
+    return () => {
+      startSub.remove();
+      endSub.remove();
+      resultSub.remove();
+      errorSub.remove();
+    };
+  }, [speechModule]);
+
+  React.useEffect(() => {
+    if (visible) return undefined;
+    speechModule?.stop?.();
+    setListeningSearch(false);
+    return undefined;
+  }, [speechModule, visible]);
 
   function updateSelectedFoods(
     next:
@@ -983,45 +1015,6 @@ function AddMealModal({
   function handleSelectFood(food: FoodItem) {
     setFoodItem(food);
     setFoodQuery(food.name);
-    void enrichFoodBeforeUse(food, { updateCurrentFood: true });
-  }
-
-  async function enrichFoodBeforeUse(
-    food: FoodItem,
-    options: { updateCurrentFood?: boolean } = {},
-  ): Promise<FoodItem> {
-    if (
-      !isFirebaseConfigured ||
-      !user ||
-      user.id === "dev_user" ||
-      hasExpandedNutrition(food)
-    )
-      return food;
-    try {
-      const enriched = await enrichGlobalFood({ userId: user.id, food });
-      if (options.updateCurrentFood) {
-        setFoodItem((current) =>
-          current?.id === food.id ? enriched : current,
-        );
-        setFoodQuery((current) =>
-          current === food.name ? enriched.name : current,
-        );
-      }
-      return enriched;
-    } catch (error) {
-      if (isAiLimitError(error)) {
-        console.warn(
-          "Nao foi possivel completar nutrientes agora: limite diario da IA atingido.",
-        );
-      } else {
-        console.warn(
-          "Failed to enrich selected food before saving",
-          food.name,
-          error,
-        );
-      }
-      return food;
-    }
   }
 
   function handleFoodQuery(value: string) {
@@ -1031,14 +1024,62 @@ function AddMealModal({
     }
   }
 
-  async function resolveCurrentFood(): Promise<FoodItem> {
-    let food = foodItem ?? findAnyFood(foodQuery, customFoods);
+  async function toggleSearchVoice() {
+    if (!speechModule || !speechModule.isRecognitionAvailable()) {
+      Alert.alert(
+        "Microfone indisponível",
+        "O reconhecimento de voz precisa de uma development build para funcionar.",
+      );
+      return;
+    }
+
+    if (listeningSearch) {
+      speechModule.stop();
+      setListeningSearch(false);
+      return;
+    }
+
+    try {
+      const permission = await speechModule.requestPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          "Permissão necessária",
+          "Autorize o microfone para buscar alimentos por voz.",
+        );
+        return;
+      }
+      setFoodQuery("");
+      setFoodItem(null);
+      speechModule.start({
+        lang: "pt-BR",
+        interimResults: true,
+        continuous: false,
+      });
+    } catch (error) {
+      setListeningSearch(false);
+      console.warn("Meal search voice fallback", error);
+      Alert.alert(
+        "Não consegui ouvir agora",
+        "Tente novamente ou digite o alimento no campo de busca.",
+      );
+    }
+  }
+
+  async function resolveCurrentFood({
+    createWithAi = false,
+  }: { createWithAi?: boolean } = {}): Promise<FoodItem> {
+    let food = createWithAi
+      ? findExactFood(foodQuery, customFoods)
+      : foodItem ?? findAnyFood(foodQuery, customFoods);
     if (!food) {
+      if (!createWithAi) {
+        throw new Error("food_not_found");
+      }
       food = await onCreateFood(foodQuery, "porcao");
       setFoodItem(food);
       setFoodQuery(food.name);
     }
-    return enrichFoodBeforeUse(food);
+    return food;
   }
 
   function selectionFromFood(
@@ -1100,9 +1141,8 @@ function AddMealModal({
     if (selecting || saving || addingFoodId) return;
     setAddingFoodId(food.id);
     try {
-      const enriched = await enrichFoodBeforeUse(food);
-      const preferredUnit = getPreferredFoodUnit(enriched);
-      const selection = selectionFromFood(enriched, { preferredUnit });
+      const preferredUnit = getPreferredFoodUnit(food);
+      const selection = selectionFromFood(food, { preferredUnit });
       updateSelectedFoods((items) => [...items, selection]);
       if (foodItem?.id === food.id) {
         setFoodQuery("");
@@ -1122,7 +1162,7 @@ function AddMealModal({
     if (isEmpty || selecting) return;
     setSelecting(true);
     try {
-      const food = await resolveCurrentFood();
+      const food = await resolveCurrentFood({ createWithAi: true });
       const selection = selectionFromFood(food);
       updateSelectedFoods((items) => [...items, selection]);
       setFoodQuery("");
@@ -1151,13 +1191,15 @@ function AddMealModal({
         const food = await resolveCurrentFood();
         itemsToSave = [selectionFromFood(food)];
       } catch (error) {
-        console.warn("AI food creation failed", error);
-        if (isAiLimitError(error)) showAiLimitAlert();
-        else
+        if ((error as Error)?.message === "food_not_found") {
           Alert.alert(
             "Alimento não encontrado",
-            "Não consegui cadastrar este alimento automaticamente agora. Tente outro nome ou seja mais específico.",
+            "Selecione um alimento da lista ou use o botão Cadastrar com IA para criar um novo alimento.",
           );
+        } else {
+          console.warn("Failed to resolve current food", error);
+          Alert.alert("Erro", "Não foi possível adicionar este alimento agora.");
+        }
         setSaving(false);
         return;
       }
@@ -1289,14 +1331,44 @@ function AddMealModal({
           >
             <View style={modal.searchPanel}>
               <Text style={modal.label}>Alimento</Text>
-              <TextInput
-                style={modal.input}
-                value={foodQuery}
-                onChangeText={handleFoodQuery}
-                placeholder="Busque: arroz, file frango, brocoli..."
-                placeholderTextColor={Colors.gray400}
-                autoFocus
-              />
+              <View
+                style={[
+                  modal.searchInputWrap,
+                  listeningSearch && modal.searchInputWrapActive,
+                ]}
+              >
+                <TextInput
+                  style={modal.searchInput}
+                  value={foodQuery}
+                  onChangeText={handleFoodQuery}
+                  placeholder={
+                    listeningSearch
+                      ? "Ouvindo..."
+                      : "Busque: arroz, file frango, brocoli..."
+                  }
+                  placeholderTextColor={Colors.gray400}
+                  autoFocus
+                />
+                <TouchableOpacity
+                  style={[
+                    modal.searchMicButton,
+                    listeningSearch && modal.searchMicButtonActive,
+                  ]}
+                  onPress={toggleSearchVoice}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    listeningSearch
+                      ? "Parar busca por voz"
+                      : "Buscar alimento por voz"
+                  }
+                >
+                  <MaterialIcons
+                    name={listeningSearch ? "stop" : "mic"}
+                    size={20}
+                    color={listeningSearch ? Colors.white : Colors.green600}
+                  />
+                </TouchableOpacity>
+              </View>
               <Text style={modal.subLabel}>
                 {todayLog?.entries.length || savedMeals.length
                   ? "Mais usados por você"
@@ -1314,13 +1386,20 @@ function AddMealModal({
                       style={modal.chip}
                       onPress={() => handleSelectFood(food)}
                     >
-                      <Text style={modal.chipText}>
-                        {food.emoji}{" "}
-                        {food.name.replace(
-                          / cozido\/mexido| cozido| grelhado/g,
-                          "",
-                        )}
-                      </Text>
+                      <View style={modal.chipContent}>
+                        <FoodIcon
+                          name={food.name}
+                          emoji={food.emoji}
+                          size={15}
+                          variant="plain"
+                        />
+                        <Text style={modal.chipText}>
+                          {food.name.replace(
+                            / cozido\/mexido| cozido| grelhado/g,
+                            "",
+                          )}
+                        </Text>
+                      </View>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -1335,7 +1414,6 @@ function AddMealModal({
               >
                 {suggestions.map((food) => {
                   const selected = foodItem?.id === food.id;
-                  const incomplete = !hasExpandedNutrition(food);
                   const previewUnit = getPreferredFoodUnit(food);
                   const previewNutrition = calculateNutrition(
                     food,
@@ -1351,7 +1429,9 @@ function AddMealModal({
                       ]}
                       onPress={() => handleSelectFood(food)}
                     >
-                      <Text style={modal.foodEmoji}>{food.emoji}</Text>
+                      <View style={modal.foodEmoji}>
+                        <FoodIcon name={food.name} emoji={food.emoji} />
+                      </View>
                       <View style={modal.foodInfo}>
                         <Text
                           style={[
@@ -1367,13 +1447,6 @@ function AddMealModal({
                         <NutritionSummary nutrition={previewNutrition} />
                       </View>
                       <View style={modal.foodActions}>
-                        {incomplete && !selected ? (
-                          <MaterialIcons
-                            name="auto-awesome"
-                            size={18}
-                            color={Colors.warning}
-                          />
-                        ) : null}
                         {selected && (
                           <MaterialIcons
                             name="check-circle"
@@ -1473,9 +1546,13 @@ function AddMealModal({
                   {selectedFoods.map((item) => (
                     <View key={item.key} style={modal.selectedItem}>
                       <View style={modal.selectedTopRow}>
-                        <Text style={modal.selectedEmoji}>
-                          {item.food.emoji}
-                        </Text>
+                        <View style={modal.selectedEmoji}>
+                          <FoodIcon
+                            name={item.food.name}
+                            emoji={item.food.emoji}
+                            size={18}
+                          />
+                        </View>
                         <View style={modal.selectedInfo}>
                           <Text style={modal.selectedName}>
                             {item.food.name}
@@ -1775,17 +1852,6 @@ function VoiceModal({
   }
 
   React.useEffect(() => {
-    const missing = editableDrafts.filter(
-      (item) => !item.food && !item.resolving && !item.resolveFailed,
-    );
-    if (missing.length === 0) return;
-
-    missing.forEach((item) => {
-      void resolveDraftWithAi(item);
-    });
-  }, [editableDrafts, onCreateFood]);
-
-  React.useEffect(() => {
     if (!speechModule) return undefined;
 
     const startSub = speechModule.addListener("start", () =>
@@ -1973,9 +2039,12 @@ function VoiceModal({
                 editableDrafts.map((item) => (
                   <View key={item.key} style={voiceModal.editCard}>
                     <View style={voiceModal.editHeader}>
-                      <Text style={voiceModal.previewEmoji}>
-                        {item.food?.emoji ?? "?"}
-                      </Text>
+                      <View style={voiceModal.previewEmoji}>
+                        <FoodIcon
+                          name={item.food?.name ?? item.foodText}
+                          emoji={item.food?.emoji}
+                        />
+                      </View>
                       <View style={voiceModal.previewInfo}>
                         <TextInput
                           style={[
@@ -2542,9 +2611,12 @@ export function PhotoModal({
                 editableDrafts.map((item) => (
                   <View key={item.key} style={voiceModal.editCard}>
                     <View style={voiceModal.editHeader}>
-                      <Text style={voiceModal.previewEmoji}>
-                        {item.food?.emoji ?? "?"}
-                      </Text>
+                      <View style={voiceModal.previewEmoji}>
+                        <FoodIcon
+                          name={item.food?.name ?? item.foodText}
+                          emoji={item.food?.emoji}
+                        />
+                      </View>
                       <View style={voiceModal.previewInfo}>
                         <TextInput
                           style={[
@@ -2701,7 +2773,9 @@ function TodayEntry({
 
   return (
     <View style={logStyle.row}>
-      <Text style={logStyle.emoji}>{entry.emoji}</Text>
+      <View style={logStyle.emoji}>
+        <FoodIcon name={entry.foodName} emoji={entry.emoji} />
+      </View>
       <View style={logStyle.info}>
         <View style={logStyle.infoTop}>
           <View style={logStyle.periodBadge}>
@@ -2946,7 +3020,6 @@ export function AddMealScreen({
   const addEntryFn = useStore((s) => s.addEntry);
 
   const [addModal, setAddModal] = useState(false);
-  const [voiceModal, setVoiceModal] = useState(false);
   const [photoModal, setPhotoModal] = useState(false);
   const [customFoods, setCustomFoods] = useState<FoodItem[]>([]);
   const [recentLogs, setRecentLogs] = useState<DailyLog[]>([]);
@@ -3008,11 +3081,6 @@ export function AddMealScreen({
     setAddModal(true);
   }
 
-  function openVoiceMeal() {
-    closeActionMenu();
-    setVoiceModal(true);
-  }
-
   function openPhotoMeal() {
     closeActionMenu();
     setPhotoModal(true);
@@ -3034,46 +3102,6 @@ export function AddMealScreen({
       .then((foods) => {
         if (!active) return;
         setCustomFoods(foods);
-
-        if (
-          !isFirebaseConfigured ||
-          user.id === "dev_user" ||
-          foodEnrichmentPaused
-        )
-          return;
-        const foodsToEnrich = foods
-          .filter(
-            (food) =>
-              !hasExpandedNutrition(food) &&
-              !enrichedFoodIdsThisSession.has(food.id),
-          )
-          .slice(0, ENRICH_FOODS_PER_LOAD);
-
-        if (foodsToEnrich.length === 0) return;
-
-        (async () => {
-          for (const food of foodsToEnrich) {
-            enrichedFoodIdsThisSession.add(food.id);
-            try {
-              const generated = await generateFoodNutrition(
-                food.name,
-                food.defaultUnit,
-              );
-              const enriched = mergeExpandedFoodNutrition(food, generated);
-              const nextFoods = await saveCustomFood(user.id, enriched);
-              if (active) setCustomFoods(nextFoods);
-            } catch (error) {
-              if (isAiLimitError(error)) {
-                foodEnrichmentPaused = true;
-                console.warn(
-                  "Enriquecimento nutricional pausado: limite diário da IA atingido.",
-                );
-                break;
-              }
-              console.warn("Failed to enrich food nutrition", food.name, error);
-            }
-          }
-        })();
       })
       .catch((error) => {
         console.warn("Failed to load custom foods", error);
@@ -3126,9 +3154,7 @@ export function AddMealScreen({
   const handleCreateFood = useCallback(
     async (foodName: string, preferredUnit: QuantityUnit) => {
       if (!user) throw new Error("Missing user");
-      const existing = isCompositeFoodQuery(foodName)
-        ? findExactFood(foodName, customFoods)
-        : findAnyFood(foodName, customFoods);
+      const existing = findExactFood(foodName, customFoods);
       if (existing) return existing;
 
       const food = markAiFood(
@@ -3240,20 +3266,6 @@ export function AddMealScreen({
     }
 
     if (options.navigateAfter !== false) handleMealAdded();
-  }
-
-  async function handleVoiceConfirm(
-    items: MealDraft[],
-    mealPeriod: MealPeriod,
-  ) {
-    if (items.length === 0) {
-      Alert.alert(
-        "Não entendi os alimentos",
-        "Tente falar com quantidade e nome do alimento, por exemplo: 2 ovos e 1 fatia de pão.",
-      );
-      return;
-    }
-    await saveDraftItems(items, "voice", mealPeriod);
   }
 
   async function publishPhotoPost(
@@ -3600,7 +3612,9 @@ export function AddMealScreen({
             {savedMeals.map((m) => (
               <View key={m.id} style={styles.savedCard}>
                 <View style={styles.savedLeft}>
-                  <Text style={styles.savedEmoji}>{m.emoji}</Text>
+                  <View style={styles.savedEmoji}>
+                    <FoodIcon name={m.name} emoji={m.emoji} />
+                  </View>
                   <View>
                     <Text style={styles.savedName}>{m.name}</Text>
                     <Text style={styles.savedInfo}>
@@ -3735,20 +3749,6 @@ export function AddMealScreen({
 
             <TouchableOpacity
               style={styles.fabActionItem}
-              onPress={openVoiceMeal}
-              accessibilityRole="button"
-              accessibilityLabel="Adicionar refeição por voz"
-            >
-              <View style={styles.fabActionLabel}>
-                <Text style={styles.fabActionText}>Adicionar por voz</Text>
-              </View>
-              <View style={styles.fabActionButton}>
-                <MaterialIcons name="mic" size={22} color={Colors.green600} />
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.fabActionItem}
               onPress={openPhotoMeal}
               accessibilityRole="button"
               accessibilityLabel="Adicionar refeição por foto"
@@ -3789,13 +3789,6 @@ export function AddMealScreen({
         visible={addModal}
         onClose={() => setAddModal(false)}
         onAdded={handleMealAdded}
-        customFoods={customFoods}
-        onCreateFood={handleCreateFood}
-      />
-      <VoiceModal
-        visible={voiceModal}
-        onClose={() => setVoiceModal(false)}
-        onConfirm={handleVoiceConfirm}
         customFoods={customFoods}
         onCreateFood={handleCreateFood}
       />
@@ -4083,7 +4076,7 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     flex: 1,
   },
-  savedEmoji: { fontSize: 24 },
+  savedEmoji: { width: 38, alignItems: "center" },
   savedName: { fontSize: Typography.md, fontWeight: Typography.semibold },
   savedInfo: { fontSize: Typography.xs, color: Colors.gray400 },
   quickAddBtn: {
@@ -4145,7 +4138,7 @@ const logStyle = StyleSheet.create({
     borderBottomColor: Colors.border,
     gap: Spacing.sm,
   },
-  emoji: { fontSize: 24, width: 36, textAlign: "center" },
+  emoji: { width: 40, alignItems: "center" },
   info: { flex: 1 },
   infoTop: {
     flexDirection: "row",
@@ -4267,6 +4260,7 @@ const modal = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
+  chipContent: { flexDirection: "row", alignItems: "center", gap: 5 },
   chipText: {
     fontSize: Typography.sm,
     fontWeight: Typography.semibold,
@@ -4292,7 +4286,7 @@ const modal = StyleSheet.create({
     borderBottomColor: Colors.border,
   },
   foodOptionActive: { backgroundColor: Colors.green50 },
-  foodEmoji: { fontSize: 22, width: 28, textAlign: "center", marginTop: 2 },
+  foodEmoji: { width: 38, alignItems: "center", marginTop: 1 },
   foodInfo: { flex: 1 },
   foodActions: {
     alignItems: "center",
@@ -4427,7 +4421,7 @@ const modal = StyleSheet.create({
     alignItems: "center",
     gap: Spacing.sm,
   },
-  selectedEmoji: { fontSize: 20, width: 26, textAlign: "center" },
+  selectedEmoji: { width: 34, alignItems: "center" },
   selectedInfo: { flex: 1 },
   selectedName: {
     fontSize: Typography.sm,
@@ -4613,7 +4607,7 @@ const voiceModal = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
   },
-  previewEmoji: { fontSize: 24, width: 32, textAlign: "center" },
+  previewEmoji: { width: 40, alignItems: "center" },
   previewInfo: { flex: 1 },
   previewName: {
     fontSize: Typography.md,

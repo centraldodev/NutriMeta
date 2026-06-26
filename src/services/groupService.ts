@@ -45,6 +45,18 @@ const COMMUNITY_POSTS_COLLECTION = COLLECTIONS.communityPosts || 'communityPosts
 const COMMUNITY_FOLLOWS_COLLECTION = COLLECTIONS.communityFollows || 'communityFollows';
 const COMMUNITY_COMMENTS_COLLECTION = COLLECTIONS.communityComments || 'communityComments';
 
+function readDate(value: unknown, fallback = new Date()): Date {
+  if (value instanceof Date) return value;
+  if (value && typeof (value as { toDate?: unknown }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return fallback;
+}
+
 async function uriToBlob(uri: string): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -127,7 +139,7 @@ export function subscribeCommunityPosts(
       return {
         id: docSnap.id,
         ...data,
-        createdAt: data.createdAt?.toDate() ?? new Date(),
+        createdAt: readDate(data.createdAt),
       } as CommunityPost;
     }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 80));
   });
@@ -318,7 +330,7 @@ export function subscribeCommunityComments(
       return {
         id: docSnap.id,
         ...data,
-        createdAt: data.createdAt?.toDate() ?? new Date(),
+        createdAt: readDate(data.createdAt),
       } as CommunityComment;
     }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 80));
   });
@@ -403,7 +415,7 @@ export function subscribeGroupNotifications(
         const data = d.data();
         return {
           ...data,
-          createdAt: data.createdAt?.toDate() ?? new Date(),
+          createdAt: readDate(data.createdAt),
         } as GroupNotification;
       })
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
@@ -426,7 +438,7 @@ export function subscribePatientNotifications(
         const data = d.data();
         return {
           ...data,
-          createdAt: data.createdAt?.toDate() ?? new Date(),
+          createdAt: readDate(data.createdAt),
         } as GroupNotification;
       })
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())

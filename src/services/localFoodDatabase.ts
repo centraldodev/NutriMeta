@@ -112,11 +112,91 @@ function amountFromReference(reference?: string | null) {
   return Number.isFinite(amount) && amount > 0 ? amount : 100;
 }
 
+function normalizeSearchText(value?: string | null) {
+  return (value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function includesAny(text: string, terms: string[]) {
+  return terms.some((term) => text.includes(term));
+}
+
+function emojiForFood(record: GeneralFoodRecord) {
+  const text = normalizeSearchText(record.nome);
+
+  if (includesAny(text, ['pizza'])) return '🍕';
+  if (includesAny(text, ['coxinha', 'pastel', 'empada', 'esfiha', 'kibe', 'risole', 'croquete', 'bolinha de queijo', 'salgado'])) return '🥟';
+  if (includesAny(text, ['pao de queijo'])) return '🧀';
+  if (includesAny(text, ['pao', 'torrada', 'panetone', 'croissant', 'misto quente', 'bauru', 'sanduiche', 'beirute', 'cachorro-quente', 'hamburguer', 'x-salada', 'x-bacon', 'x-egg', 'x-tudo'])) return '🥪';
+  if (includesAny(text, ['macarrao', 'massa', 'lasanha', 'nhoque', 'espaguete'])) return '🍝';
+  if (includesAny(text, ['batata frita', 'fritas', 'chips', 'salgadinho', 'nuggets'])) return '🍟';
+  if (includesAny(text, ['biscoito agua e sal', 'bolacha maisena', 'cereal matinal', 'barra de cereal'])) return '🌾';
+  if (includesAny(text, ['bolo', 'torta', 'quiche'])) return '🍰';
+  if (includesAny(text, ['biscoito recheado', 'brigadeiro', 'chocolate', 'cacau', 'bombom', 'doce', 'acucar', 'goiabada', 'sorvete', 'chantilly', 'leite condensado', 'bolacha', 'biscoito'])) return '🍬';
+  if (includesAny(text, ['azeitona', 'maionese'])) return '🫒';
+
+  if (includesAny(text, ['agua', 'cha ', 'cha-', 'cafe', 'refrigerante', 'suco', 'vitamina', 'achocolatado', 'caldo de cana'])) return '🥤';
+  if (includesAny(text, ['cerveja', 'vinho', 'cachaca', 'caipirinha', 'vodka', 'whisky', 'licor'])) return '🍺';
+  if (includesAny(text, ['acai'])) return '🫐';
+  if (includesAny(text, ['banana'])) return '🍌';
+  if (includesAny(text, ['laranja', 'mexerica', 'tangerina'])) return '🍊';
+  if (includesAny(text, ['maca'])) return '🍎';
+  if (includesAny(text, ['uva'])) return '🍇';
+  if (includesAny(text, ['abacaxi'])) return '🍍';
+  if (includesAny(text, ['manga'])) return '🥭';
+  if (includesAny(text, ['mamao'])) return '🧡';
+  if (includesAny(text, ['morango'])) return '🍓';
+  if (includesAny(text, ['melancia'])) return '🍉';
+  if (includesAny(text, ['coco', 'leite de coco'])) return '🥥';
+  if (includesAny(text, ['fruta', 'goiaba', 'pera', 'pessego', 'ameixa', 'kiwi', 'abacate'])) return '🍎';
+
+  if (includesAny(text, ['alface', 'couve', 'agriao', 'rucula', 'espinafre', 'repolho', 'acelga', 'almeirao', 'chicoria', 'taioba', 'serralha', 'mostarda folha'])) return '🥬';
+  if (includesAny(text, ['tomate'])) return '🍅';
+  if (includesAny(text, ['cenoura'])) return '🥕';
+  if (includesAny(text, ['batata', 'mandioca', 'macaxeira', 'inhame', 'cara', 'mandioquinha', 'batata baroa'])) return '🥔';
+  if (includesAny(text, ['abobora', 'moranga'])) return '🎃';
+  if (includesAny(text, ['milho', 'pamonha', 'curau', 'canjica', 'cuscuz'])) return '🌽';
+  if (includesAny(text, ['brocolis'])) return '🥦';
+  if (includesAny(text, ['pimentao', 'pimenta'])) return '🌶️';
+  if (includesAny(text, ['cebola', 'alho', 'alho-poro'])) return '🧅';
+  if (includesAny(text, ['berinjela'])) return '🍆';
+  if (includesAny(text, ['cogumelo', 'champignon'])) return '🍄';
+  if (includesAny(text, ['verdura', 'legume', 'hortalica', 'quiabo', 'chuchu', 'vagem', 'pepino', 'beterraba', 'jilo', 'nabo', 'rabanete', 'palmito', 'aspargo', 'alcachofra'])) return '🥬';
+
+  if (includesAny(text, ['arroz', 'risoto', 'galinhada', 'carreteiro', 'baiao', 'yakisoba'])) return '🍚';
+  if (includesAny(text, ['feijao', 'lentilha', 'grao de bico', 'ervilha', 'tropeiro', 'tutu', 'virado'])) return '🫘';
+  if (includesAny(text, ['tapioca', 'polvilho'])) return '🫓';
+  if (includesAny(text, ['farinha', 'farofa', 'aveia', 'granola', 'cereal matinal', 'barra de cereal'])) return '🌾';
+
+  if (includesAny(text, ['frango', 'galinha', 'peru', 'ave'])) return '🍗';
+  if (includesAny(text, ['bife', 'carne', 'picanha', 'alcatra', 'contrafile', 'cupim', 'costela bovina', 'file ', 'filet', 'medalhao', 'picadinho', 'rabada', 'mocoto', 'figado', 'bovina', 'boi'])) return '🥩';
+  if (includesAny(text, ['porco', 'suino', 'bisteca', 'costelinha', 'lombo', 'bacon', 'paio', 'calabresa', 'linguica', 'presunto', 'mortadela', 'salsicha'])) return '🥓';
+  if (includesAny(text, ['peixe', 'tilapia', 'salmao', 'sardinha', 'atum', 'bacalhau', 'merluza', 'robalo', 'badejo'])) return '🐟';
+  if (includesAny(text, ['camarao', 'caranguejo', 'marisco', 'lula', 'frutos do mar'])) return '🦐';
+  if (includesAny(text, ['ovo', 'omelete'])) return '🥚';
+
+  if (includesAny(text, ['leite', 'iogurte', 'coalhada', 'requeijao', 'creme de leite'])) return '🥛';
+  if (includesAny(text, ['queijo', 'mussarela', 'parmesao', 'minas', 'coalho', 'quatro queijos'])) return '🧀';
+  if (includesAny(text, ['azeite', 'oleo', 'manteiga', 'margarina', 'gordura', 'maionese'])) return '🫒';
+  if (includesAny(text, ['castanha', 'amendoim', 'nozes', 'semente', 'chia', 'linhaca', 'gergelim'])) return '🥜';
+
+  if (includesAny(text, ['sopa', 'caldo', 'canja', 'creme de'])) return '🍲';
+  if (includesAny(text, ['salada'])) return '🥗';
+  if (includesAny(text, ['moqueca', 'bobo', 'vatapa', 'acaraje', 'tacaca', 'maniçoba', 'manicoba', 'feijoada', 'dobradinha', 'sarapatel', 'barreado', 'vaca atolada', 'escondidinho', 'strogonoff', 'estrogonofe', 'parmegiana', 'panqueca', 'polenta', 'angu', 'canjiquinha', 'empadao'])) return '🍽️';
+  if (includesAny(text, ['whey', 'creatina', 'proteina vegetal', 'suplemento'])) return '💪';
+
+  return emojiForCategory(record.categoria);
+}
+
 function emojiForCategory(category?: string | null) {
   const text = (category ?? '').toLowerCase();
   if (text.includes('bebida')) return '🥤';
   if (text.includes('fruta')) return '🍎';
   if (text.includes('verdura') || text.includes('legume')) return '🥬';
+  if (text.includes('cereal') || text.includes('grão') || text.includes('massa')) return '🌾';
+  if (text.includes('leguminosa')) return '🫘';
   if (text.includes('carne') || text.includes('peixe') || text.includes('ovo')) return '🍗';
   if (text.includes('leite') || text.includes('latic')) return '🥛';
   if (text.includes('óleo') || text.includes('gordura')) return '🫒';
@@ -157,7 +237,7 @@ function mapFoodRecord(
   return {
     id: localFoodId(options.idPrefix, record.id, record.nome),
     name: record.nome,
-    emoji: emojiForCategory(record.categoria),
+    emoji: emojiForFood(record),
     aliases: aliasesFor([record.nome, record.categoria, record.subcategoria, record.observacoes, ...(record.tags ?? []), ...ingredientAliases]),
     defaultUnit,
     nutritionPer: {

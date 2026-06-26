@@ -55,6 +55,61 @@ const GOAL_FAT_PCT: Record<GoalType, number> = {
   bulk:     0.28,
 };
 
+const DRI_GOALS = {
+  vitaminD: {
+    adult: 15,
+    olderAdult: 20,
+  },
+  vitaminE: 15,
+  vitaminB12: 2.4,
+  folate: 400,
+  sodiumLimit: 2300,
+} as const;
+
+function calcMicronutrientGoals(profile: Pick<UserProfile, 'age' | 'sex'>): Pick<
+  MacroGoals,
+  | 'calcium'
+  | 'iron'
+  | 'potassium'
+  | 'magnesium'
+  | 'zinc'
+  | 'vitaminA'
+  | 'vitaminC'
+  | 'vitaminD'
+  | 'vitaminE'
+  | 'vitaminB12'
+  | 'folate'
+> {
+  const age = Math.max(0, profile.age);
+  const male = profile.sex === 'M';
+
+  const calcium =
+    age <= 18 ? 1300 : age >= 71 || (!male && age >= 51) ? 1200 : 1000;
+  const iron =
+    age <= 18 ? (male ? 11 : 15) : !male && age <= 50 ? 18 : 8;
+  const potassium = male ? (age <= 18 ? 3000 : 3400) : age <= 18 ? 2300 : 2600;
+  const magnesium =
+    age <= 18 ? (male ? 410 : 360) : age <= 30 ? (male ? 400 : 310) : male ? 420 : 320;
+  const zinc = male ? 11 : age <= 18 ? 9 : 8;
+  const vitaminA = male ? 900 : 700;
+  const vitaminC = age <= 18 ? (male ? 75 : 65) : male ? 90 : 75;
+  const vitaminD = age >= 71 ? DRI_GOALS.vitaminD.olderAdult : DRI_GOALS.vitaminD.adult;
+
+  return {
+    calcium,
+    iron,
+    potassium,
+    magnesium,
+    zinc,
+    vitaminA,
+    vitaminC,
+    vitaminD,
+    vitaminE: DRI_GOALS.vitaminE,
+    vitaminB12: DRI_GOALS.vitaminB12,
+    folate: DRI_GOALS.folate,
+  };
+}
+
 function getProteinPerKg(goal: GoalType, activityLevel: ActivityLevel): number {
   const isActive = activityLevel >= 1.55;
 
@@ -85,7 +140,8 @@ export function calcMacroGoals(profile: UserProfile): MacroGoals {
   const fiber  = Math.max(profile.sex === 'M' ? 30 : 25, Math.round((kcal / 1000) * 14));
   const water  = Math.round(clamp(profile.weight * 35, profile.sex === 'M' ? 2500 : 2000, profile.sex === 'M' ? 3700 : 2700));
   const sugar  = Math.floor((kcal * 0.1) / 4);
-  const sodium = 2300;
+  const sodium = DRI_GOALS.sodiumLimit;
+  const micronutrients = calcMicronutrientGoals(profile);
 
   return {
     kcal,
@@ -96,6 +152,7 @@ export function calcMacroGoals(profile: UserProfile): MacroGoals {
     water,
     sugar,
     sodium,
+    ...micronutrients,
   };
 }
 
