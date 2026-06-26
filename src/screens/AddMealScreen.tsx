@@ -8,7 +8,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, Radius } from '../constants/theme';
 import { useStore, selectGoals, selectSavedMeals } from '../store';
-import { getRecentDailyLogs, incrementMealUsage, removeMealEntry } from '../services/nutritionService';
+import { getRecentDailyLogs, incrementMealUsage, removeMealEntry, updateMealEntry } from '../services/nutritionService';
 import { addCommunityPost } from '../services/groupService';
 import { getCachedRecentDailyLogs } from '../services/dailyLogStorage';
 import { WaterModal } from './HomeScreen';
@@ -357,11 +357,17 @@ function parseQtyInput(value: string): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
+function parseOptionalQtyInput(value: string): number {
+  const parsed = Number(value.replace(',', '.'));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 export type MealDraft = {
   key: string;
   food: FoodItem | null;
   foodText: string;
   foodFound: boolean;
+  quantityText: string;
   quantity: number;
   unit: QuantityUnit;
   nutrition: ReturnType<typeof calculateNutrition>;
@@ -375,6 +381,7 @@ type MealEntryPayload = Omit<MealEntry, 'id' | 'userId' | 'addedAt'>;
 type ManualMealSelection = {
   key: string;
   food: FoodItem;
+  quantityText: string;
   quantity: number;
   unit: QuantityUnit;
   nutrition: FoodNutrition;
@@ -547,6 +554,7 @@ function parseVoiceMeal(rawText: string, customFoods: FoodItem[] = []): MealDraf
         food: null,
         foodText: segment,
         foodFound: false,
+        quantityText: String(quantity).replace('.', ','),
         quantity,
         unit: parsed.unit,
         nutrition: emptyNutrition(),
@@ -562,6 +570,7 @@ function parseVoiceMeal(rawText: string, customFoods: FoodItem[] = []): MealDraf
       food,
       foodText: food.name,
       foodFound: true,
+      quantityText: String(quantity).replace('.', ','),
       quantity,
       unit,
       nutrition: calculateNutrition(food, quantity, unit),
@@ -600,6 +609,7 @@ function expandCompositeVoiceSegment(segment: string, customFoods: FoodItem[], i
           food,
           foodText: food.name,
           foodFound: true,
+          quantityText: String(quantity).replace('.', ','),
           quantity,
           unit,
           nutrition: calculateNutrition(food, quantity, unit),
@@ -620,6 +630,7 @@ function expandCompositeVoiceSegment(segment: string, customFoods: FoodItem[], i
       food,
       foodText: food.name,
       foodFound: true,
+      quantityText: String(part.quantity).replace('.', ','),
       quantity: part.quantity,
       unit,
       nutrition: calculateNutrition(food, part.quantity, unit),
@@ -696,7 +707,7 @@ function recalcMealDraft(item: MealDraft, changes: Partial<MealDraft>): MealDraf
     };
   }
   const unit = next.food.nutritionPer[next.unit] ? next.unit : next.food.defaultUnit;
-  const quantity = next.quantity > 0 ? next.quantity : 1;
+  const quantity = next.quantity > 0 ? next.quantity : 0;
   const adjustedQuantity = next.food.defaultUnit === 'mililitro' && unit === 'mililitro' && !next.food.nutritionPer[next.unit] && quantity === 1
     ? 200
     : quantity;
@@ -704,6 +715,7 @@ function recalcMealDraft(item: MealDraft, changes: Partial<MealDraft>): MealDraf
     ...next,
     foodFound: true,
     unit,
+    quantityText: next.quantityText,
     quantity: adjustedQuantity,
     nutrition: calculateNutrition(next.food, adjustedQuantity, unit),
   };
@@ -826,6 +838,7 @@ function AddMealModal({
     return {
       key: `${food.id}_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       food,
+      quantityText: String(parsedQuantity).replace('.', ','),
       quantity: parsedQuantity,
       unit: selectedUnit,
       nutrition: calculateNutrition(food, parsedQuantity, selectedUnit),
@@ -836,9 +849,11 @@ function AddMealModal({
     updateSelectedFoods((items) => items.map((item) => {
       if (item.key !== key) return item;
       const nextUnit = changes.unit ?? item.unit;
-      const quantity = changes.quantityText !== undefined ? parseQtyInput(changes.quantityText) : item.quantity;
+      const quantityText = changes.quantityText !== undefined ? changes.quantityText : item.quantityText;
+      const quantity = changes.quantityText !== undefined ? parseOptionalQtyInput(changes.quantityText) : item.quantity;
       return {
         ...item,
+        quantityText,
         quantity,
         unit: nextUnit,
         nutrition: calculateNutrition(item.food, quantity, nextUnit),
@@ -907,6 +922,10 @@ function AddMealModal({
 
     if (itemsToSave.length === 0) {
       Alert.alert('Nenhum alimento selecionado', 'Selecione um ou mais alimentos antes de adicionar a refeição.');
+      return;
+    }
+    if (itemsToSave.some((item) => !item.quantityText.trim() || item.quantity <= 0)) {
+      Alert.alert('Quantidade inválida', 'Informe uma quantidade maior que zero para todos os alimentos.');
       return;
     }
 
@@ -1108,7 +1127,7 @@ function AddMealModal({
                           <Text style={modal.inlineLabel}>Qtd.</Text>
                           <TextInput
                             style={modal.selectedQtyInput}
-                            value={String(item.quantity).replace('.', ',')}
+                            value={item.quantityText}
                             onChangeText={(value) => updateSelectedFood(item.key, { quantityText: value })}
                             keyboardType="decimal-pad"
                             placeholder="1"
@@ -1403,7 +1422,7 @@ function VoiceModal({
   }
 
   function updateDraftQuantity(key: string, value: string) {
-    updateDraft(key, (item) => recalcMealDraft(item, { quantity: parseQtyInput(value) }));
+    updateDraft(key, (item) => recalcMealDraft(item, { quantityText: value, quantity: parseOptionalQtyInput(value) }));
   }
 
   function updateDraftUnit(key: string, nextUnit: QuantityUnit) {
@@ -1487,9 +1506,9 @@ function VoiceModal({
                     <View style={voiceModal.editRow}>
                       <View style={voiceModal.quantityEdit}>
                         <Text style={voiceModal.smallLabel}>Qtd.</Text>
-                        <TextInput
-                          style={voiceModal.quantityInput}
-                          value={String(item.quantity).replace('.', ',')}
+                          <TextInput
+                            style={voiceModal.quantityInput}
+                          value={item.quantityText}
                           onChangeText={(value) => updateDraftQuantity(item.key, value)}
                           keyboardType="decimal-pad"
                           placeholder="1"
@@ -1642,6 +1661,7 @@ export function PhotoModal({
           food,
           foodText: food?.name ?? item.foodName,
           foodFound: Boolean(food),
+          quantityText: String(quantity).replace('.', ','),
           quantity,
           unit,
           nutrition: food ? calculateNutrition(food, quantity, unit) : emptyNutrition(),
@@ -1754,7 +1774,7 @@ export function PhotoModal({
   }
 
   function updateDraftQuantity(key: string, value: string) {
-    updateDraft(key, (item) => recalcMealDraft(item, { quantity: parseQtyInput(value) }));
+    updateDraft(key, (item) => recalcMealDraft(item, { quantityText: value, quantity: parseOptionalQtyInput(value) }));
   }
 
   function updateDraftUnit(key: string, nextUnit: QuantityUnit) {
@@ -1869,9 +1889,9 @@ export function PhotoModal({
                     <View style={voiceModal.editRow}>
                       <View style={voiceModal.quantityEdit}>
                         <Text style={voiceModal.smallLabel}>Qtd.</Text>
-                        <TextInput
-                          style={voiceModal.quantityInput}
-                          value={String(item.quantity).replace('.', ',')}
+                          <TextInput
+                            style={voiceModal.quantityInput}
+                          value={item.quantityText}
                           onChangeText={(value) => updateDraftQuantity(item.key, value)}
                           keyboardType="decimal-pad"
                           placeholder="1"
@@ -1930,7 +1950,7 @@ export function PhotoModal({
 
 // ─── Today Log ────────────────────────────────────────────────────────────────
 
-function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete?: () => void }) {
+function TodayEntry({ entry, onDelete, onEdit }: { entry: MealEntry; onDelete?: () => void; onEdit?: () => void }) {
   const time = formatBrasiliaTime(new Date(entry.addedAt));
   const mealPeriod = getEntryMealPeriod(entry);
   const nutritionDetails = formatNutritionDetails(entry.nutrition);
@@ -1949,6 +1969,11 @@ function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete?: () => vo
       <View style={logStyle.right}>
         <Text style={logStyle.kcal}>{Math.round(entry.nutrition.kcal)}</Text>
         <Text style={logStyle.kcalLabel}>kcal</Text>
+        {onEdit ? (
+          <TouchableOpacity onPress={onEdit} style={logStyle.editBtn}>
+            <MaterialIcons name="edit" size={16} color={Colors.green600} />
+          </TouchableOpacity>
+        ) : null}
         {onDelete ? (
           <TouchableOpacity onPress={onDelete} style={logStyle.delBtn}>
             <Text style={logStyle.delTxt}>✕</Text>
@@ -1956,6 +1981,144 @@ function TodayEntry({ entry, onDelete }: { entry: MealEntry; onDelete?: () => vo
         ) : null}
       </View>
     </View>
+  );
+}
+
+function divideNutrition(nutrition: FoodNutrition, quantity: number): FoodNutrition {
+  const factor = quantity > 0 ? quantity : 1;
+  const result = { ...emptyNutrition() } as FoodNutrition;
+  (Object.entries(nutrition) as [keyof FoodNutrition, number | undefined][]).forEach(([key, value]) => {
+    if (typeof value !== 'number') return;
+    result[key] = Math.round((value / factor) * 10) / 10 as never;
+  });
+  result.kcal = Math.round(result.kcal);
+  return result;
+}
+
+function editableFoodFromEntry(entry: MealEntry, customFoods: FoodItem[]): FoodItem {
+  const found = findAnyFood(entry.foodName.replace(/\(.+\)$/g, '').trim(), customFoods) ?? findBestFood(entry.foodName, customFoods, 20);
+  if (found) return found;
+  return {
+    id: `entry_${entry.id}`,
+    name: entry.foodName.replace(/\(.+\)$/g, '').trim() || entry.foodName,
+    emoji: entry.emoji,
+    aliases: [entry.foodName.toLowerCase()],
+    defaultUnit: entry.unit,
+    nutritionPer: {
+      [entry.unit]: divideNutrition(entry.nutrition, entry.quantity),
+    },
+    source: 'entry',
+  };
+}
+
+function EditMealEntryModal({
+  visible,
+  entry,
+  customFoods,
+  onClose,
+  onSave,
+}: {
+  visible: boolean;
+  entry: MealEntry | null;
+  customFoods: FoodItem[];
+  onClose: () => void;
+  onSave: (entry: MealEntry) => Promise<void>;
+}) {
+  const [quantityText, setQuantityText] = React.useState('');
+  const [unit, setUnit] = React.useState<QuantityUnit>('porcao');
+  const [mealPeriod, setMealPeriod] = React.useState<MealPeriod>('snack');
+  const [saving, setSaving] = React.useState(false);
+
+  const food = React.useMemo(() => entry ? editableFoodFromEntry(entry, customFoods) : null, [customFoods, entry]);
+  const quantity = parseOptionalQtyInput(quantityText);
+  const nutrition = food ? calculateNutrition(food, quantity, unit) : emptyNutrition();
+
+  React.useEffect(() => {
+    if (!visible || !entry) return;
+    setQuantityText(String(entry.quantity).replace('.', ','));
+    setUnit(entry.unit);
+    setMealPeriod(getEntryMealPeriod(entry));
+  }, [entry, visible]);
+
+  async function handleSave() {
+    if (!entry || !food) return;
+    if (!quantityText.trim() || quantity <= 0) {
+      Alert.alert('Quantidade inválida', 'Informe uma quantidade maior que zero.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const waterMl = getWaterMl(food, quantity, unit);
+      const finalPeriod = waterMl ? 'hydration' : mealPeriod;
+      await onSave({
+        ...entry,
+        foodName: `${food.name} (${quantityText} ${UNIT_LABELS[unit]})`,
+        emoji: food.emoji,
+        quantity,
+        unit,
+        nutrition,
+        waterMl,
+        mealPeriod: finalPeriod,
+        mealGroupLabel: MEAL_PERIOD_LABELS[finalPeriod],
+      });
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={modal.bg}>
+        <TouchableOpacity style={modal.backdrop} onPress={onClose} />
+        <View style={modal.sheet}>
+          <View style={modal.handle} />
+          <View style={modal.modalHeader}>
+            <View>
+              <Text style={modal.title}>Editar refeição</Text>
+              <Text style={modal.subtitle}>{food?.emoji} {food?.name}</Text>
+            </View>
+            <TouchableOpacity style={modal.closePill} onPress={onClose}>
+              <Text style={modal.closePillText}>Fechar</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={modal.bodyContent}>
+            <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
+            <View style={modal.selectedItem}>
+              <Text style={modal.inlineLabel}>Quantidade</Text>
+              <TextInput
+                style={modal.selectedQtyInput}
+                value={quantityText}
+                onChangeText={setQuantityText}
+                keyboardType="decimal-pad"
+                placeholder="1"
+                placeholderTextColor={Colors.gray400}
+              />
+              <View style={modal.selectedUnits}>
+                {getFoodUnits(food).map((unitOption) => (
+                  <TouchableOpacity
+                    key={unitOption}
+                    style={[modal.unitChip, unit === unitOption && modal.unitChipActive]}
+                    onPress={() => setUnit(unitOption)}
+                  >
+                    <Text style={[modal.unitChipText, unit === unitOption && modal.unitChipTextActive]}>{UNIT_LABELS[unitOption]}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={modal.selectedMeta}>{formatNutritionDetails(nutrition, { includeKcal: true })}</Text>
+            </View>
+          </View>
+          <View style={modal.actions}>
+            <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
+              <Text style={modal.btnCancelText}>Cancelar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[modal.btnAdd, saving && modal.btnDisabled]} onPress={handleSave} disabled={saving}>
+              {saving ? <ActivityIndicator color={Colors.white} /> : <Text style={modal.btnAddText}>Salvar alterações</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -1979,6 +2142,7 @@ export function AddMealScreen({
   const todayLog   = useStore((s) => s.todayLog);
   const savedMeals = useStore(selectSavedMeals);
   const removeEntry = useStore((s) => s.removeEntry);
+  const updateEntry = useStore((s) => s.updateEntry);
   const goals       = useStore(selectGoals);
   const user        = useStore((s) => s.user);
   const profile     = useStore((s) => s.profile);
@@ -1992,8 +2156,10 @@ export function AddMealScreen({
   const [selectedDate, setSelectedDate] = useState(() => formatDate(new Date()));
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<MealEntry | null>(null);
+  const dateScrollRef = React.useRef<ScrollView>(null);
   const todayDate = formatDate(new Date());
-  const recentDates = React.useMemo(() => Array.from({ length: 31 }, (_item, index) => dateDaysAgoBrasilia(index)), []);
+  const recentDates = React.useMemo(() => Array.from({ length: 31 }, (_item, index) => dateDaysAgoBrasilia(30 - index)), []);
 
   function handleMealAdded() {
     setTimeout(() => onMealAdded?.(), 0);
@@ -2131,6 +2297,10 @@ export function AddMealScreen({
     if (items.length === 0) {
       Alert.alert('Nenhum alimento para adicionar', 'Revise os itens detectados antes de confirmar.');
       throw new Error('No meal draft items');
+    }
+    if (items.some((item) => item.food && (!item.quantityText.trim() || item.quantity <= 0))) {
+      Alert.alert('Quantidade inválida', 'Informe uma quantidade maior que zero para todos os alimentos.');
+      throw new Error('Invalid meal draft quantity');
     }
 
     let savedCount = 0;
@@ -2300,6 +2470,19 @@ export function AddMealScreen({
     removeEntry(entry.id);
   }
 
+  async function handleUpdateEntry(nextEntry: MealEntry) {
+    if (user && goals && isFirebaseConfigured && user.id !== 'dev_user') {
+      try {
+        await updateMealEntry(user.id, goals, nextEntry);
+      } catch (error) {
+        console.warn('Failed to update meal entry', error);
+        Alert.alert('Erro', 'Não foi possível atualizar esta refeição no Firebase.');
+        throw error;
+      }
+    }
+    updateEntry(nextEntry);
+  }
+
   const logsByDate = React.useMemo(() => {
     const byDate = new Map(recentLogs.map((log) => [log.date, log]));
     if (todayLog) byDate.set(todayLog.date, todayLog);
@@ -2420,7 +2603,12 @@ export function AddMealScreen({
               <Text style={styles.dateTotalLabel}>kcal</Text>
             </View>
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <ScrollView
+            ref={dateScrollRef}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            onContentSizeChange={() => dateScrollRef.current?.scrollToEnd({ animated: false })}
+          >
             <View style={styles.dateChips}>
               {recentDates.map((date) => {
                 const chip = formatDateChip(date);
@@ -2478,7 +2666,12 @@ export function AddMealScreen({
                   <Text style={logStyle.groupCount}>{group.entries.length}</Text>
                 </View>
                 {group.entries.map((entry) => (
-                  <TodayEntry key={entry.id} entry={entry} onDelete={isViewingToday ? () => handleDeleteEntry(entry) : undefined} />
+                  <TodayEntry
+                    key={entry.id}
+                    entry={entry}
+                    onEdit={isViewingToday ? () => setEditingEntry(entry) : undefined}
+                    onDelete={isViewingToday ? () => handleDeleteEntry(entry) : undefined}
+                  />
                 ))}
               </View>
             ))}
@@ -2492,6 +2685,13 @@ export function AddMealScreen({
       {onAddWater && onWaterClose ? (
         <WaterModal visible={waterOpen} onClose={onWaterClose} onAdd={onAddWater} />
       ) : null}
+      <EditMealEntryModal
+        visible={Boolean(editingEntry)}
+        entry={editingEntry}
+        customFoods={customFoods}
+        onClose={() => setEditingEntry(null)}
+        onSave={handleUpdateEntry}
+      />
     </SafeAreaView>
   );
 }
@@ -2574,6 +2774,7 @@ const logStyle = StyleSheet.create({
   right:    { alignItems: 'flex-end', gap: 2 },
   kcal:     { fontSize: Typography.md, fontWeight: Typography.bold },
   kcalLabel:{ fontSize: Typography.xs, color: Colors.gray400 },
+  editBtn:  { marginTop: 4, padding: 4, borderRadius: Radius.full, backgroundColor: Colors.green50 },
   delBtn:   { marginTop: 4, padding: 4 },
   delTxt:   { color: Colors.gray400, fontSize: Typography.sm },
 });

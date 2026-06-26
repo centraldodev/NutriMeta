@@ -184,10 +184,11 @@ export interface GroupMemberStats {
 
 export interface GroupNotification {
   id: string;
-  groupId: string;
+  groupId?: string;
   userId: string;
   userName: string;
-  type: 'goal_hit' | 'rank_change' | 'streak' | 'app_tip' | 'weekly_insight' | 'nutritionist_feedback';
+  targetUserIds?: string[];
+  type: 'goal_hit' | 'rank_change' | 'streak' | 'app_tip' | 'weekly_insight' | 'nutritionist_feedback' | 'food_plan_created' | 'food_plan_updated';
   macro?: keyof MacroGoals;
   message: string;
   createdAt: Date;
@@ -225,8 +226,12 @@ export interface NutritionistChatMessage {
 export type FoodPlanMealPeriod = MealPeriod;
 
 export interface FoodPlanMealItem {
+  foodId?: string;
   name: string;
+  emoji?: string;
   quantity: string;
+  quantityValue?: number;
+  unit?: QuantityUnit;
   notes?: string;
   nutrition?: FoodNutrition;
 }

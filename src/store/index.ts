@@ -36,6 +36,7 @@ interface NutritionSlice {
   setGoals:     (goals: MacroGoals) => void;
   setSavedMeals:(meals: SavedMeal[]) => void;
   addEntry:     (entry: MealEntry) => void;
+  updateEntry:  (entry: MealEntry) => void;
   removeEntry:  (entryId: string) => void;
   addWater:     (amountMl: number) => void;
   setNutritionLoading: (v: boolean) => void;
@@ -153,6 +154,23 @@ export const useStore = create<AppStore>((set) => ({
           totalNutrition,
           waterMl: (state.todayLog.waterMl ?? 0) + (entry.waterMl ?? 0),
           completedGoals,
+          updatedAt: new Date(),
+        },
+      };
+    }),
+
+  updateEntry: (entry) =>
+    set((state) => {
+      if (!state.todayLog?.entries.some((item) => item.id === entry.id)) return {};
+      const entries = state.todayLog.entries.map((item) => item.id === entry.id ? entry : item);
+      const totalNutrition = sumNutrition(entries);
+      return {
+        todayLog: {
+          ...state.todayLog,
+          entries,
+          totalNutrition,
+          waterMl: entries.reduce((sum, item) => sum + (item.waterMl ?? 0), 0),
+          completedGoals: state.goals ? getCompletedGoals(totalNutrition, state.goals) : [],
           updatedAt: new Date(),
         },
       };

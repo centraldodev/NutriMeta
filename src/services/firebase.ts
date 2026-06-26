@@ -197,11 +197,31 @@ service cloud.firestore {
       );
     }
 
-    // Notifications: members can read; system/cloud functions write
+    match /foodPlans/{planId} {
+      allow read: if request.auth != null && (
+        resource.data.patientId == request.auth.uid ||
+        resource.data.nutritionistId == request.auth.uid
+      );
+      allow create: if request.auth != null
+        && request.resource.data.nutritionistId == request.auth.uid
+        && get(/databases/$(database)/documents/nutritionistLinks/$(request.resource.data.nutritionistId + '_' + request.resource.data.patientId)).data.status == 'accepted';
+      allow update: if request.auth != null
+        && resource.data.nutritionistId == request.auth.uid
+        && request.resource.data.nutritionistId == request.auth.uid;
+    }
+
+    // Notifications: users read their own; nutritionists can notify linked patients
     match /notifications/{notifId} {
-      allow read: if request.auth != null
+      allow read: if request.auth != null && (
+        request.auth.uid in resource.data.targetUserIds ||
+        resource.data.groupId != null
+      );
+      allow create: if request.auth != null && (
+        request.resource.data.userId == request.auth.uid ||
+        request.auth.uid in request.resource.data.targetUserIds
+      );
+      allow update: if request.auth != null
         && request.auth.uid in resource.data.targetUserIds;
-      allow write: if false; // Cloud Functions only
     }
 
     // Community comments: public inside the group, authored by signed-in users

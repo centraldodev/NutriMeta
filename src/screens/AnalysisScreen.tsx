@@ -16,8 +16,8 @@ import { isFirebaseConfigured } from '../config';
 import { getRecentDailyLogs } from '../services/nutritionService';
 import { getCachedRecentDailyLogs } from '../services/dailyLogStorage';
 import { useStore, selectGoals } from '../store';
-import { DailyLog, FoodNutrition, MealEntry, MealPeriod } from '../types';
-import { calcGoalProgressPercent, dateDaysAgoBrasilia, formatBrasiliaDate, formatDate, formatNutritionDetails, sumNutrition } from '../utils/nutrition';
+import { DailyLog, FoodNutrition, MacroGoals, MealPeriod } from '../types';
+import { dateDaysAgoBrasilia, formatBrasiliaDate, sumNutrition } from '../utils/nutrition';
 
 const EMPTY_TOTAL: FoodNutrition = { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 };
 const DEFAULT_GOALS: MacroGoals = {
@@ -70,11 +70,28 @@ type NutritionGoalRow = {
   overPct?: number;
 };
 
-type MonthWeek = {
+type WeekRange = {
   index: number;
   label: string;
   rangeLabel: string;
   dates: string[];
+};
+
+type WeeklyFoodSummary = {
+  name: string;
+  emoji: string;
+  count: number;
+  kcal: number;
+  sodium: number;
+  sugar: number;
+};
+
+type MealDistributionItem = {
+  period: MealPeriod;
+  label: string;
+  kcal: number;
+  count: number;
+  pct: number;
 };
 
 const MEAL_PERIOD_LABELS: Record<MealPeriod, string> = {
@@ -93,29 +110,7 @@ const MEAL_PERIOD_ORDER = new Map<MealPeriod, number>([
   ['hydration', 4],
 ]);
 
-function shortWeekday(dateString: string): string {
-  const [year, month, day] = dateString.split('-').map(Number);
-  return formatBrasiliaDate(new Date(Date.UTC(year, month - 1, day, 12)), { weekday: 'short' }).replace('.', '');
-}
-
-function formatSelectedDate(dateString: string): string {
-  const [year, month, day] = dateString.split('-').map(Number);
-  return formatBrasiliaDate(new Date(Date.UTC(year, month - 1, day, 12)), {
-    weekday: 'long',
-    day: '2-digit',
-    month: 'long',
-  });
-}
-
-function monthDayCount(year: number, month: number) {
-  return new Date(Date.UTC(year, month, 0, 12)).getUTCDate();
-}
-
-function makeDateString(year: number, month: number, day: number): string {
-  return formatDate(new Date(Date.UTC(year, month - 1, day, 12)));
-}
-
-function formatShortDayMonth(dateString: string): string {
+function formatShortDate(dateString: string): string {
   const [year, month, day] = dateString.split('-').map(Number);
   return formatBrasiliaDate(new Date(Date.UTC(year, month - 1, day, 12)), {
     day: '2-digit',
@@ -123,36 +118,17 @@ function formatShortDayMonth(dateString: string): string {
   }).replace('.', '');
 }
 
-function getMonthWeeks(referenceDate: string): MonthWeek[] {
-  const [year, month, day] = referenceDate.split('-').map(Number);
-  const daysInMonth = monthDayCount(year, month);
-  const weekCount = Math.ceil(daysInMonth / 7);
-
-  return Array.from({ length: weekCount }, (_, index) => {
-    const startDay = index * 7 + 1;
-    const endDay = Math.min(startDay + 6, daysInMonth);
-    const dates = Array.from({ length: endDay - startDay + 1 }, (_item, offset) =>
-      makeDateString(year, month, startDay + offset)
-    );
+function buildWeekRanges(): WeekRange[] {
+  return Array.from({ length: 4 }, (_item, index) => {
+    const endOffset = index * 7;
+    const startOffset = endOffset + 6;
+    const dates = Array.from({ length: 7 }, (_date, offset) => dateDaysAgoBrasilia(startOffset - offset));
     return {
       index,
-      label: `Semana ${index + 1}`,
-      rangeLabel: `${formatShortDayMonth(dates[0])} - ${formatShortDayMonth(dates[dates.length - 1])}`,
+      label: index === 0 ? 'Últimos 7 dias' : `${endOffset + 1}-${startOffset + 1} dias atrás`,
+      rangeLabel: `${formatShortDate(dates[0])} - ${formatShortDate(dates[dates.length - 1])}`,
       dates,
     };
-  });
-}
-
-function getMonthWeekIndex(referenceDate: string): number {
-  const day = Number(referenceDate.split('-')[2] ?? 1);
-  return Math.max(0, Math.ceil(day / 7) - 1);
-}
-
-function sortMealEntries(entries: MealEntry[]) {
-  return [...entries].sort((a, b) => {
-    const periodDiff = (MEAL_PERIOD_ORDER.get(a.mealPeriod) ?? 99) - (MEAL_PERIOD_ORDER.get(b.mealPeriod) ?? 99);
-    if (periodDiff !== 0) return periodDiff;
-    return new Date(a.addedAt).getTime() - new Date(b.addedAt).getTime();
   });
 }
 
@@ -175,19 +151,114 @@ function averageWaterForDates(dates: string[], byDate: Map<string, DailyLog>): n
   return Math.round(total / dates.length);
 }
 
-function groupMealEntriesByPeriod(entries: MealEntry[]) {
-  const groups = new Map<MealPeriod, MealEntry[]>();
-  sortMealEntries(entries).forEach((entry) => {
-    groups.set(entry.mealPeriod, [...(groups.get(entry.mealPeriod) ?? []), entry]);
-  });
-  return Array.from(groups.entries()).sort(([periodA], [periodB]) =>
-    (MEAL_PERIOD_ORDER.get(periodA) ?? 99) - (MEAL_PERIOD_ORDER.get(periodB) ?? 99)
-  );
+function totalNutritionForDates(dates: string[], byDate: Map<string, DailyLog>): FoodNutrition {
+  return sumNutrition(dates.map((date) => ({ nutrition: byDate.get(date)?.totalNutrition ?? EMPTY_TOTAL })));
+}
+
+function totalWaterForDates(dates: string[], byDate: Map<string, DailyLog>): number {
+  return dates.reduce((sum, date) => sum + (byDate.get(date)?.waterMl ?? 0), 0);
 }
 
 function formatNutritionValue(value: number, unit: string): string {
   const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
   return `${String(rounded).replace('.', ',')}${unit}`;
+}
+
+function formatDelta(value: number, unit = '') {
+  const rounded = Math.abs(value) >= 10 ? Math.round(value) : Math.round(Math.abs(value) * 10) / 10;
+  if (value > 0) return `+${rounded}${unit}`;
+  if (value < 0) return `-${rounded}${unit}`;
+  return `0${unit}`;
+}
+
+function goalPct(current: number, goal: number) {
+  if (!goal) return 0;
+  return Math.round((current / goal) * 100);
+}
+
+function daysMeetingTarget(dates: string[], byDate: Map<string, DailyLog>, key: keyof FoodNutrition, goal: number, mode: NutritionGoalMode) {
+  if (!goal) return 0;
+  return dates.reduce((count, date) => {
+    const value = (byDate.get(date)?.totalNutrition?.[key] as number | undefined) ?? 0;
+    if (mode === 'limit') return count + (value > goal ? 1 : 0);
+    return count + (value >= goal * 0.9 ? 1 : 0);
+  }, 0);
+}
+
+function daysMeetingWaterTarget(dates: string[], byDate: Map<string, DailyLog>, goal: number) {
+  if (!goal) return 0;
+  return dates.reduce((count, date) => count + ((byDate.get(date)?.waterMl ?? 0) >= goal * 0.9 ? 1 : 0), 0);
+}
+
+function buildTopFoods(logs: DailyLog[]): WeeklyFoodSummary[] {
+  const map = new Map<string, WeeklyFoodSummary>();
+  logs.forEach((log) => {
+    log.entries.forEach((entry) => {
+      if (entry.mealPeriod === 'hydration') return;
+      const key = entry.foodName.trim().toLowerCase();
+      const current = map.get(key) ?? {
+        name: entry.foodName,
+        emoji: entry.emoji,
+        count: 0,
+        kcal: 0,
+        sodium: 0,
+        sugar: 0,
+      };
+      current.count += 1;
+      current.kcal += entry.nutrition.kcal ?? 0;
+      current.sodium += entry.nutrition.sodium ?? 0;
+      current.sugar += entry.nutrition.sugar ?? 0;
+      map.set(key, current);
+    });
+  });
+  return Array.from(map.values())
+    .map((item) => ({
+      ...item,
+      kcal: Math.round(item.kcal),
+      sodium: Math.round(item.sodium),
+      sugar: Math.round(item.sugar * 10) / 10,
+    }))
+    .sort((a, b) => b.kcal - a.kcal || b.count - a.count)
+    .slice(0, 5);
+}
+
+function buildMealDistribution(logs: DailyLog[]): MealDistributionItem[] {
+  const totalKcal = logs.reduce((sum, log) => sum + (log.totalNutrition?.kcal ?? 0), 0);
+  const map = new Map<MealPeriod, { kcal: number; count: number }>();
+  logs.forEach((log) => {
+    log.entries.forEach((entry) => {
+      const period = entry.mealPeriod;
+      const current = map.get(period) ?? { kcal: 0, count: 0 };
+      current.kcal += entry.nutrition.kcal ?? 0;
+      current.count += 1;
+      map.set(period, current);
+    });
+  });
+  return Array.from(map.entries())
+    .map(([period, item]) => ({
+      period,
+      label: MEAL_PERIOD_LABELS[period],
+      kcal: Math.round(item.kcal),
+      count: item.count,
+      pct: totalKcal > 0 ? Math.round((item.kcal / totalKcal) * 100) : 0,
+    }))
+    .sort((a, b) => (MEAL_PERIOD_ORDER.get(a.period) ?? 99) - (MEAL_PERIOD_ORDER.get(b.period) ?? 99));
+}
+
+function buildWeeklyAlerts(dates: string[], byDate: Map<string, DailyLog>, goals: MacroGoals) {
+  const proteinDays = daysMeetingTarget(dates, byDate, 'protein', goals.protein, 'target');
+  const fiberLowDays = dates.length - daysMeetingTarget(dates, byDate, 'fiber', goals.fiber, 'target');
+  const sodiumHighDays = daysMeetingTarget(dates, byDate, 'sodium', goals.sodium, 'limit');
+  const sugarHighDays = daysMeetingTarget(dates, byDate, 'sugar', goals.sugar, 'limit');
+  const waterDays = daysMeetingWaterTarget(dates, byDate, goals.water);
+
+  return [
+    { label: 'Proteína na meta', value: `${proteinDays}/${dates.length} dias`, tone: proteinDays >= 4 ? 'good' : 'warn' },
+    { label: 'Fibra baixa', value: `${fiberLowDays}/${dates.length} dias`, tone: fiberLowDays >= 4 ? 'warn' : 'good' },
+    { label: 'Sódio acima', value: `${sodiumHighDays}/${dates.length} dias`, tone: sodiumHighDays >= 3 ? 'warn' : 'good' },
+    { label: 'Açúcar acima', value: `${sugarHighDays}/${dates.length} dias`, tone: sugarHighDays >= 3 ? 'warn' : 'good' },
+    { label: 'Água na meta', value: `${waterDays}/${dates.length} dias`, tone: waterDays >= 4 ? 'good' : 'warn' },
+  ];
 }
 
 function getNutritionGoalStatus(current: number, goal: number, mode: NutritionGoalMode, overPct = 110) {
@@ -271,46 +342,13 @@ function NutritionGoalTable({
   );
 }
 
-function buildLocalInsight(todayLog: DailyLog | undefined, goals: MacroGoals, weekAverage: FoodNutrition): NutritionInsight {
-  if (!todayLog) {
-    return {
-      summary: 'Registre uma refeição para receber uma leitura do dia.',
-      tips: ['Depois do primeiro registro, a análise compara seu dia com suas metas e com a média recente.'],
-    };
-  }
-
-  const total = todayLog.totalNutrition ?? EMPTY_TOTAL;
-  const tips: string[] = [];
-  const waterMl = todayLog.waterMl ?? 0;
-  const waterEntries = todayLog.entries.filter((entry) => (entry.waterMl ?? 0) > 0);
-  if (waterMl < goals.water * 0.5) tips.push('Água ainda está baixa para sua meta; tente distribuir copos ao longo do dia em vez de deixar tudo para o fim.');
-  if (waterEntries.length <= 1 && waterMl > 0) tips.push('Você registrou água em poucos horários; a regularidade ajuda a manter hidratação mais estável.');
-  if (total.protein < goals.protein * 0.5) tips.push('Proteína ainda está baixa para a meta; uma fonte magra na próxima refeição pode ajudar.');
-  if (total.fiber < goals.fiber * 0.5) tips.push('Fibras ainda estão baixas; legumes, frutas, feijões ou grãos integrais melhoram o equilíbrio do dia.');
-  if ((total.sodium ?? 0) > goals.sodium) tips.push('Sódio passou do limite; priorize alimentos frescos e menos ultraprocessados no restante do dia.');
-  if ((total.sugar ?? 0) > goals.sugar) tips.push('Açúcar passou da referência; vale equilibrar as próximas escolhas com alimentos menos doces.');
-  if (total.kcal > goals.kcal * 1.1) tips.push('Calorias já passaram da meta; refeições mais leves e ricas em vegetais podem fechar melhor o dia.');
-  if (weekAverage.kcal > 0 && total.kcal < weekAverage.kcal * 0.7) tips.push('Hoje está abaixo da sua média recente; acompanhe se isso combina com fome, treino e rotina.');
-  if (tips.length === 0) tips.push('Seu dia está caminhando bem; mantenha variedade de alimentos para cobrir micronutrientes.');
-
-  return {
-    summary: `Hoje você registrou ${Math.round(total.kcal)} kcal em ${todayLog.entries.length} alimento(s).`,
-    tips: tips.slice(0, 3),
-  };
-}
-
 export function AnalysisScreen() {
   const user = useStore((s) => s.user);
-  const profile = useStore((s) => s.profile);
   const todayLog = useStore((s) => s.todayLog);
   const goals = useStore(selectGoals);
   const [logs, setLogs] = useState<DailyLog[]>([]);
   const [loading, setLoading] = useState(false);
-  const [insight, setInsight] = useState<NutritionInsight | null>(null);
-  const [insightLoading, setInsightLoading] = useState(false);
-  const todayDate = useMemo(() => formatDate(new Date()), []);
-  const [selectedDate, setSelectedDate] = useState(todayDate);
-  const [selectedWeekIndex, setSelectedWeekIndex] = useState(() => getMonthWeekIndex(todayDate));
+  const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
 
   const safeGoals = { ...DEFAULT_GOALS, ...(goals ?? {}) };
 
@@ -342,17 +380,22 @@ export function AnalysisScreen() {
 
   const mergedLogs = useMemo(() => mergeTodayLog(logs, todayLog), [logs, todayLog]);
   const byDate = useMemo(() => new Map(mergedLogs.map((log) => [log.date, log])), [mergedLogs]);
-  const monthWeeks = useMemo(() => getMonthWeeks(todayDate), [todayDate]);
-  const selectedWeek = monthWeeks[selectedWeekIndex] ?? monthWeeks[monthWeeks.length - 1];
-  const weekDates = selectedWeek?.dates ?? [];
-  const weekLogs = useMemo(() => weekDates.map((date) => byDate.get(date)).filter(Boolean) as DailyLog[], [byDate, weekDates]);
-  const selectedLog = useMemo(() => byDate.get(selectedDate), [byDate, selectedDate]);
-  const selectedEntryGroups = useMemo(() => groupMealEntriesByPeriod(selectedLog?.entries ?? []), [selectedLog]);
-  const monthAverage = useMemo(() => averageNutrition(mergedLogs), [mergedLogs]);
-  const weekAverage = useMemo(() => averageNutritionForDates(weekDates, byDate), [byDate, weekDates]);
-  const weekAverageWaterMl = useMemo(() => averageWaterForDates(weekDates, byDate), [byDate, weekDates]);
-  const todayAnalysisLog = useMemo(() => byDate.get(formatDate(new Date())), [byDate]);
-  const localInsight = useMemo(() => buildLocalInsight(todayAnalysisLog, safeGoals, weekAverage), [todayAnalysisLog, safeGoals, weekAverage]);
+  const periodDates = useMemo(() => Array.from({ length: 31 }, (_item, index) => dateDaysAgoBrasilia(index)).reverse(), []);
+  const weekRanges = useMemo(buildWeekRanges, []);
+  const selectedWeek = weekRanges[selectedWeekIndex] ?? weekRanges[0];
+  const previousWeek = weekRanges[selectedWeekIndex + 1];
+  const periodAverage = useMemo(() => averageNutritionForDates(periodDates, byDate), [byDate, periodDates]);
+  const periodAverageWaterMl = useMemo(() => averageWaterForDates(periodDates, byDate), [byDate, periodDates]);
+  const selectedWeekLogs = useMemo(() => selectedWeek.dates.map((date) => byDate.get(date)).filter(Boolean) as DailyLog[], [byDate, selectedWeek]);
+  const selectedWeekAverage = useMemo(() => averageNutritionForDates(selectedWeek.dates, byDate), [byDate, selectedWeek]);
+  const selectedWeekTotal = useMemo(() => totalNutritionForDates(selectedWeek.dates, byDate), [byDate, selectedWeek]);
+  const selectedWeekWaterTotal = useMemo(() => totalWaterForDates(selectedWeek.dates, byDate), [byDate, selectedWeek]);
+  const previousWeekAverage = useMemo(() => previousWeek ? averageNutritionForDates(previousWeek.dates, byDate) : EMPTY_TOTAL, [byDate, previousWeek]);
+  const previousWeekWaterAverage = useMemo(() => previousWeek ? averageWaterForDates(previousWeek.dates, byDate) : 0, [byDate, previousWeek]);
+  const selectedWeekWaterAverage = useMemo(() => averageWaterForDates(selectedWeek.dates, byDate), [byDate, selectedWeek]);
+  const selectedWeekTopFoods = useMemo(() => buildTopFoods(selectedWeekLogs), [selectedWeekLogs]);
+  const selectedWeekMealDistribution = useMemo(() => buildMealDistribution(selectedWeekLogs), [selectedWeekLogs]);
+  const selectedWeekAlerts = useMemo(() => buildWeeklyAlerts(selectedWeek.dates, byDate, safeGoals), [byDate, safeGoals, selectedWeek]);
   const nutritionGoalRows = useMemo<NutritionGoalRow[]>(() => [
     { key: 'kcal', label: 'Calorias', unit: ' kcal', goal: safeGoals.kcal, mode: 'target', section: 'Energia e macros' },
     { key: 'protein', label: 'Proteína', unit: 'g', goal: safeGoals.protein, mode: 'target', section: 'Energia e macros', overPct: 130 },
@@ -375,42 +418,6 @@ export function AnalysisScreen() {
     { key: 'folate', label: 'Folato', unit: 'mcg', goal: 400, mode: 'target', section: 'Vitaminas e minerais' },
   ], [safeGoals]);
 
-  const bestDay = useMemo(() => {
-    return mergedLogs
-      .map((log) => ({ log, pct: calcGoalProgressPercent(log.totalNutrition ?? EMPTY_TOTAL, log.goals ?? safeGoals) }))
-      .sort((a, b) => b.pct - a.pct)[0];
-  }, [mergedLogs, safeGoals]);
-
-  function selectWeek(week: MonthWeek) {
-    setSelectedWeekIndex(week.index);
-    if (week.dates.includes(selectedDate)) return;
-    const preferredDate = week.dates.includes(todayDate)
-      ? todayDate
-      : week.dates.find((date) => byDate.has(date)) ?? week.dates[0];
-    setSelectedDate(preferredDate);
-  }
-
-  async function handleGenerateInsight() {
-    if (!user || mergedLogs.length === 0) return;
-    if (!isFirebaseConfigured || user.id === 'dev_user') {
-      setInsight(localInsight);
-      return;
-    }
-    setInsightLoading(true);
-    try {
-      const generated = await generateNutritionInsights({ logs: mergedLogs, goals: safeGoals, profile });
-      setInsight(generated.tips.length > 0 ? generated : localInsight);
-    } catch (error) {
-      console.warn('Nutrition insight generation failed', error);
-      if (isAiLimitError(error)) {
-        showAiLimitAlert();
-      }
-      setInsight(localInsight);
-    } finally {
-      setInsightLoading(false);
-    }
-  }
-
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.headerBar}>
@@ -430,49 +437,31 @@ export function AnalysisScreen() {
         ) : mergedLogs.length === 0 ? (
           <View style={styles.emptyBox}>
             <Text style={styles.emptyTitle}>Ainda não há dados suficientes</Text>
-            <Text style={styles.emptyText}>Registre refeições por alguns dias para comparar evolução, semanas do mês e médias de nutrientes.</Text>
+            <Text style={styles.emptyText}>Registre refeições por alguns dias para comparar evolução e médias de nutrientes.</Text>
           </View>
         ) : (
           <>
-            <View style={styles.statsGrid}>
-              <StatCard label="Dias registrados" value={String(mergedLogs.length)} hint="até 31 dias" />
-              <StatCard label="Média diária" value={`${monthAverage.kcal} kcal`} hint="no período salvo" />
-              <StatCard label="Média semanal" value={`${weekAverage.kcal} kcal`} hint={selectedWeek?.label ?? 'semana'} />
-              <StatCard label="Melhor dia" value={bestDay ? `${bestDay.pct}%` : '0%'} hint={bestDay?.log.date ?? 'sem registro'} />
-            </View>
-
             <View style={styles.section}>
-              <View style={styles.insightHeader}>
-                <View style={styles.insightTitleWrap}>
-                  <Text style={styles.sectionTitle}>Dica inteligente</Text>
-                  <Text style={styles.insightSub}>Compara hoje, metas e histórico recente.</Text>
-                </View>
-                <TouchableOpacity style={styles.insightBtn} onPress={handleGenerateInsight} disabled={insightLoading}>
-                  {insightLoading ? <ActivityIndicator color={Colors.white} size="small" /> : <Text style={styles.insightBtnText}>Gerar IA</Text>}
-                </TouchableOpacity>
-              </View>
-              <Text style={styles.insightSummary}>{(insight ?? localInsight).summary}</Text>
-              {(insight ?? localInsight).tips.map((tip) => (
-                <Text key={tip} style={styles.insightTip}>- {tip}</Text>
-              ))}
-            </View>
-
-            <View style={styles.section}>
-              <View style={styles.weekHeader}>
+              <View style={styles.weekAnalysisHeader}>
                 <View>
-                  <Text style={styles.sectionTitle}>Semanas do mês</Text>
-                  <Text style={styles.weekSub}>{selectedWeek?.rangeLabel}</Text>
+                  <Text style={styles.sectionTitle}>Análise semanal</Text>
+                  <Text style={styles.weekAnalysisSub}>{selectedWeek.rangeLabel}</Text>
+                </View>
+                <View style={styles.weekRegisteredPill}>
+                  <Text style={styles.weekRegisteredValue}>{selectedWeekLogs.length}/7</Text>
+                  <Text style={styles.weekRegisteredLabel}>dias</Text>
                 </View>
               </View>
+
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.weekSelectorScroll}>
                 <View style={styles.weekSelector}>
-                  {monthWeeks.map((week) => {
+                  {weekRanges.map((week) => {
                     const active = week.index === selectedWeekIndex;
                     return (
                       <TouchableOpacity
                         key={week.index}
                         style={[styles.weekChip, active && styles.weekChipActive]}
-                        onPress={() => selectWeek(week)}
+                        onPress={() => setSelectedWeekIndex(week.index)}
                       >
                         <Text style={[styles.weekChipText, active && styles.weekChipTextActive]}>{week.label}</Text>
                         <Text style={[styles.weekChipRange, active && styles.weekChipRangeActive]}>{week.rangeLabel}</Text>
@@ -481,80 +470,87 @@ export function AnalysisScreen() {
                   })}
                 </View>
               </ScrollView>
-              <View style={styles.weekChart}>
-                {weekDates.map((date) => {
-                  const log = byDate.get(date);
-                  const kcal = log?.totalNutrition?.kcal ?? 0;
-                  const pct = macroPercent(kcal, safeGoals.kcal);
-                  return (
-                    <TouchableOpacity
-                      key={date}
-                      style={[styles.dayBarItem, selectedDate === date && styles.dayBarItemActive]}
-                      onPress={() => setSelectedDate(date)}
-                      activeOpacity={0.75}
-                    >
-                      <View style={styles.dayBarTrack}>
-                        <View style={[styles.dayBarFill, selectedDate === date && styles.dayBarFillActive, { height: `${Math.max(4, pct)}%` }]} />
-                      </View>
-                      <Text style={styles.dayBarLabel}>{shortWeekday(date)}</Text>
-                      <Text style={styles.dayBarKcal}>{Math.round(kcal)}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
 
-            <View style={styles.section}>
-              <View style={styles.selectedDayHeader}>
-                <View>
-                  <Text style={styles.sectionTitle}>Refeições do dia</Text>
-                  <Text style={styles.selectedDayDate}>{formatSelectedDate(selectedDate)}</Text>
-                </View>
-                <View style={styles.selectedDayTotal}>
-                  <Text style={styles.selectedDayKcal}>{Math.round(selectedLog?.totalNutrition?.kcal ?? 0)}</Text>
-                  <Text style={styles.selectedDayKcalLabel}>kcal</Text>
-                </View>
+              <View style={styles.weekSummaryGrid}>
+                <StatCard label="Total da semana" value={`${Math.round(selectedWeekTotal.kcal)} kcal`} hint={`${selectedWeekLogs.length} dia(s) com registro`} />
+                <StatCard label="Média diária" value={`${selectedWeekAverage.kcal} kcal`} hint="na semana selecionada" />
+                <StatCard label="Água total" value={`${Math.round(selectedWeekWaterTotal)} ml`} hint={`${selectedWeekWaterAverage} ml/dia`} />
+                <StatCard label="Vs semana anterior" value={previousWeek ? formatDelta(selectedWeekAverage.kcal - previousWeekAverage.kcal, ' kcal') : 'sem dados'} hint={previousWeek ? `água ${formatDelta(selectedWeekWaterAverage - previousWeekWaterAverage, ' ml')}` : 'compare outra semana'} />
               </View>
-              {selectedLog ? (
-                <>
-                  <Text style={styles.selectedDaySummary}>
-                    {formatNutritionDetails(selectedLog.totalNutrition ?? EMPTY_TOTAL, { includeKcal: true }) || 'Sem nutrientes registrados.'}
-                  </Text>
-                  {selectedEntryGroups.length === 0 ? (
-                    <Text style={styles.emptyText}>Nenhuma refeição registrada nessa data.</Text>
+
+              <Text style={styles.weekBlockTitle}>Aderência às metas</Text>
+              <View style={styles.adherenceGrid}>
+                {[
+                  { label: 'Calorias', value: goalPct(selectedWeekAverage.kcal, safeGoals.kcal), tone: 'neutral' },
+                  { label: 'Proteína', value: goalPct(selectedWeekAverage.protein, safeGoals.protein), tone: 'neutral' },
+                  { label: 'Fibra', value: goalPct(selectedWeekAverage.fiber, safeGoals.fiber), tone: 'neutral' },
+                  { label: 'Água', value: goalPct(selectedWeekWaterAverage, safeGoals.water), tone: 'neutral' },
+                  { label: 'Sódio', value: goalPct(selectedWeekAverage.sodium ?? 0, safeGoals.sodium), tone: (selectedWeekAverage.sodium ?? 0) > safeGoals.sodium ? 'warn' : 'good' },
+                  { label: 'Açúcar', value: goalPct(selectedWeekAverage.sugar ?? 0, safeGoals.sugar), tone: (selectedWeekAverage.sugar ?? 0) > safeGoals.sugar ? 'warn' : 'good' },
+                ].map((item) => (
+                  <View key={item.label} style={styles.adherenceItem}>
+                    <Text style={styles.adherenceLabel}>{item.label}</Text>
+                    <Text style={[styles.adherenceValue, item.tone === 'warn' && styles.adherenceWarn, item.tone === 'good' && styles.adherenceGood]}>{item.value}%</Text>
+                  </View>
+                ))}
+              </View>
+
+              <Text style={styles.weekBlockTitle}>Alertas objetivos</Text>
+              <View style={styles.alertGrid}>
+                {selectedWeekAlerts.map((alert) => (
+                  <View key={alert.label} style={[styles.alertChip, alert.tone === 'warn' ? styles.alertChipWarn : styles.alertChipGood]}>
+                    <Text style={[styles.alertValue, alert.tone === 'warn' ? styles.alertValueWarn : styles.alertValueGood]}>{alert.value}</Text>
+                    <Text style={styles.alertLabel}>{alert.label}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <View style={styles.weekColumns}>
+                <View style={styles.weekColumn}>
+                  <Text style={styles.weekBlockTitle}>Distribuição por refeição</Text>
+                  {selectedWeekMealDistribution.length === 0 ? (
+                    <Text style={styles.emptyText}>Sem refeições nessa semana.</Text>
                   ) : (
-                    selectedEntryGroups.map(([period, entries]) => (
-                      <View key={period} style={styles.mealGroup}>
-                        <View style={styles.mealGroupHeader}>
-                          <Text style={styles.mealGroupTitle}>{MEAL_PERIOD_LABELS[period]}</Text>
-                          <Text style={styles.mealGroupCount}>{entries.length} item(ns)</Text>
+                    selectedWeekMealDistribution.map((item) => (
+                      <View key={item.period} style={styles.distributionRow}>
+                        <View style={styles.distributionTop}>
+                          <Text style={styles.distributionName}>{item.label}</Text>
+                          <Text style={styles.distributionValue}>{item.pct}%</Text>
                         </View>
-                        {entries.map((entry) => (
-                          <View key={entry.id} style={styles.mealRow}>
-                            <Text style={styles.mealEmoji}>{entry.emoji}</Text>
-                            <View style={styles.mealInfo}>
-                              <Text style={styles.mealName}>{entry.foodName}</Text>
-                              <Text style={styles.mealMeta}>{entry.quantity} {entry.unit}</Text>
-                              <Text style={styles.mealNutrition}>
-                                {formatNutritionDetails(entry.nutrition, { includeKcal: true }) || 'Sem nutrientes.'}
-                              </Text>
-                            </View>
-                          </View>
-                        ))}
+                        <View style={styles.distributionBarBg}>
+                          <View style={[styles.distributionBarFill, { width: `${item.pct}%` }]} />
+                        </View>
+                        <Text style={styles.distributionMeta}>{item.kcal} kcal · {item.count} item(ns)</Text>
                       </View>
                     ))
                   )}
-                </>
-              ) : (
-                <Text style={styles.emptyText}>Nenhuma refeição registrada nessa data.</Text>
-              )}
+                </View>
+
+                <View style={styles.weekColumn}>
+                  <Text style={styles.weekBlockTitle}>Top alimentos</Text>
+                  {selectedWeekTopFoods.length === 0 ? (
+                    <Text style={styles.emptyText}>Sem alimentos nessa semana.</Text>
+                  ) : (
+                    selectedWeekTopFoods.map((item, index) => (
+                      <View key={item.name} style={styles.topFoodRow}>
+                        <Text style={styles.topFoodRank}>{index + 1}</Text>
+                        <Text style={styles.topFoodEmoji}>{item.emoji}</Text>
+                        <View style={styles.topFoodInfo}>
+                          <Text style={styles.topFoodName}>{item.name}</Text>
+                          <Text style={styles.topFoodMeta}>{item.count}x · {item.kcal} kcal · {item.sodium}mg sódio</Text>
+                        </View>
+                      </View>
+                    ))
+                  )}
+                </View>
+              </View>
             </View>
 
             <NutritionGoalTable
               rows={nutritionGoalRows}
-              totals={weekAverage}
-              waterMl={weekAverageWaterMl}
-              subtitle={`Média diária de ${selectedWeek?.label.toLowerCase() ?? 'semana'} (${selectedWeek?.rangeLabel ?? ''})`}
+              totals={periodAverage}
+              waterMl={periodAverageWaterMl}
+              subtitle="Média diária dos últimos 31 dias"
             />
           </>
         )}
@@ -588,47 +584,50 @@ const styles = StyleSheet.create({
   statHint: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 3 },
   section: { backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.sm },
   sectionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, marginBottom: Spacing.md },
-  insightHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm, marginBottom: Spacing.sm },
-  insightTitleWrap: { flex: 1 },
-  insightSub: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -Spacing.sm },
-  insightBtn: { minWidth: 86, minHeight: 36, alignItems: 'center', justifyContent: 'center', borderRadius: Radius.md, backgroundColor: Colors.green600, paddingHorizontal: Spacing.md },
-  insightBtnText: { color: Colors.white, fontSize: Typography.sm, fontWeight: Typography.bold },
-  insightSummary: { fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.semibold, lineHeight: 20, marginBottom: Spacing.xs },
-  insightTip: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 20, marginTop: 3 },
-  weekHeader: { marginBottom: Spacing.xs },
-  weekSub: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -Spacing.sm },
+  weekAnalysisHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: Spacing.sm, marginBottom: Spacing.sm },
+  weekAnalysisSub: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -Spacing.sm },
+  weekRegisteredPill: { minWidth: 68, alignItems: 'center', borderRadius: Radius.md, backgroundColor: Colors.green50, paddingHorizontal: Spacing.sm, paddingVertical: 7 },
+  weekRegisteredValue: { fontSize: Typography.md, fontWeight: Typography.bold, color: Colors.green600 },
+  weekRegisteredLabel: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -2 },
   weekSelectorScroll: { marginBottom: Spacing.sm },
   weekSelector: { flexDirection: 'row', gap: Spacing.sm, paddingRight: Spacing.sm },
-  weekChip: { minWidth: 104, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing.sm, paddingVertical: 8, backgroundColor: Colors.white },
+  weekChip: { minWidth: 132, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing.sm, paddingVertical: 8, backgroundColor: Colors.white },
   weekChipActive: { borderColor: Colors.green400, backgroundColor: Colors.green50 },
   weekChipText: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray600 },
   weekChipTextActive: { color: Colors.green600 },
   weekChipRange: { fontSize: 10, color: Colors.gray400, marginTop: 2 },
   weekChipRangeActive: { color: Colors.green600 },
-  weekChart: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', height: 170 },
-  dayBarItem: { alignItems: 'center', flex: 1, borderRadius: Radius.md, paddingVertical: 6 },
-  dayBarItemActive: { backgroundColor: Colors.green50 },
-  dayBarTrack: { width: 22, height: 110, borderRadius: 12, backgroundColor: Colors.gray50, justifyContent: 'flex-end', overflow: 'hidden' },
-  dayBarFill: { width: '100%', borderRadius: 12, backgroundColor: Colors.green400 },
-  dayBarFillActive: { backgroundColor: Colors.green600 },
-  dayBarLabel: { fontSize: Typography.xs, color: Colors.gray400, marginTop: Spacing.xs },
-  dayBarKcal: { fontSize: 10, color: Colors.gray600, fontWeight: Typography.semibold, marginTop: 2 },
-  selectedDayHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: Spacing.sm, marginBottom: Spacing.sm },
-  selectedDayDate: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -Spacing.sm, textTransform: 'capitalize' },
-  selectedDayTotal: { minWidth: 72, alignItems: 'center', borderRadius: Radius.md, backgroundColor: Colors.green50, paddingVertical: 8, paddingHorizontal: Spacing.sm },
-  selectedDayKcal: { fontSize: Typography.lg, fontWeight: Typography.bold, color: Colors.green600 },
-  selectedDayKcalLabel: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -2 },
-  selectedDaySummary: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 20, marginBottom: Spacing.sm },
-  mealGroup: { borderTopWidth: 1, borderTopColor: Colors.border, paddingTop: Spacing.sm, marginTop: Spacing.sm },
-  mealGroupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 },
-  mealGroupTitle: { fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.bold, textTransform: 'uppercase', letterSpacing: 0.5 },
-  mealGroupCount: { fontSize: Typography.xs, color: Colors.green600, fontWeight: Typography.semibold },
-  mealRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, paddingVertical: Spacing.sm },
-  mealEmoji: { width: 34, fontSize: 22, textAlign: 'center' },
-  mealInfo: { flex: 1 },
-  mealName: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray800 },
-  mealMeta: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
-  mealNutrition: { fontSize: Typography.xs, color: Colors.gray600, marginTop: 3, lineHeight: 17 },
+  weekSummaryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.sm },
+  weekBlockTitle: { fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.bold, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: Spacing.sm, marginBottom: Spacing.sm },
+  adherenceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  adherenceItem: { width: Platform.OS === 'web' ? '15.5%' : '31%', minHeight: 70, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, backgroundColor: Colors.gray50, padding: Spacing.sm, justifyContent: 'center' },
+  adherenceLabel: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.semibold },
+  adherenceValue: { fontSize: Typography.lg, color: Colors.gray800, fontWeight: Typography.bold, marginTop: 4 },
+  adherenceWarn: { color: Colors.warning },
+  adherenceGood: { color: Colors.green600 },
+  alertGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  alertChip: { minWidth: Platform.OS === 'web' ? 126 : '47%', flex: Platform.OS === 'web' ? 1 : undefined, borderRadius: Radius.md, borderWidth: 1, padding: Spacing.sm },
+  alertChipGood: { backgroundColor: Colors.green50, borderColor: Colors.green400 },
+  alertChipWarn: { backgroundColor: Colors.fatL, borderColor: '#F6C36A' },
+  alertValue: { fontSize: Typography.md, fontWeight: Typography.bold },
+  alertValueGood: { color: Colors.green600 },
+  alertValueWarn: { color: Colors.warning },
+  alertLabel: { fontSize: Typography.xs, color: Colors.gray600, marginTop: 2, fontWeight: Typography.semibold },
+  weekColumns: { flexDirection: Platform.OS === 'web' ? 'row' : 'column', gap: Spacing.md, marginTop: Spacing.sm },
+  weekColumn: { flex: 1 },
+  distributionRow: { borderTopWidth: 1, borderTopColor: Colors.border, paddingVertical: Spacing.sm },
+  distributionTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  distributionName: { flex: 1, fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray800 },
+  distributionValue: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.green600 },
+  distributionBarBg: { height: 6, backgroundColor: Colors.gray50, borderRadius: Radius.full, overflow: 'hidden', marginTop: 6 },
+  distributionBarFill: { height: 6, backgroundColor: Colors.green400, borderRadius: Radius.full },
+  distributionMeta: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 4 },
+  topFoodRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, paddingVertical: Spacing.sm },
+  topFoodRank: { width: 22, height: 22, borderRadius: 11, backgroundColor: Colors.green50, color: Colors.green600, textAlign: 'center', lineHeight: 22, fontSize: Typography.xs, fontWeight: Typography.bold },
+  topFoodEmoji: { width: 26, fontSize: 20, textAlign: 'center' },
+  topFoodInfo: { flex: 1 },
+  topFoodName: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray800 },
+  topFoodMeta: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
   nutritionPanel: {
     backgroundColor: Colors.white,
     borderRadius: Radius.lg,

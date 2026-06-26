@@ -185,6 +185,34 @@ export async function removeMealEntry(
   });
 }
 
+export async function updateMealEntry(
+  userId: string,
+  goals: MacroGoals,
+  entry: MealEntry
+): Promise<void> {
+  const date = formatDate(new Date(entry.addedAt));
+  const ref = doc(db, COLLECTIONS.dailyLogs, dailyLogId(userId, date));
+  await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(ref);
+    if (!snap.exists()) return;
+
+    const data = snap.data() as DailyLog;
+    const previousEntries = data.entries ?? [];
+    const allEntries = previousEntries.map((item) => item.id === entry.id ? entry : item);
+    const total = sumNutrition(allEntries);
+    const waterMl = sumEntryWater(allEntries);
+
+    transaction.update(ref, {
+      entries: allEntries,
+      totalNutrition: total,
+      waterMl,
+      goals,
+      completedGoals: getCompletedGoals(total, goals),
+      updatedAt: serverTimestamp(),
+    });
+  });
+}
+
 export async function addWaterIntake(
   userId: string,
   goals: MacroGoals,

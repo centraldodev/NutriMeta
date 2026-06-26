@@ -72,7 +72,8 @@
           "imageWidth": 220,
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ]
   }
 }

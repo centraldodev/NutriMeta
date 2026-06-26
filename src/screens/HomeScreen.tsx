@@ -23,10 +23,12 @@ import { saveUserProfile, signOut } from '../services/authService';
 import { respondNutritionistInvite, subscribePatientAcceptedNutritionistLinks, subscribePatientNutritionistInvites } from '../services/nutritionistLinkService';
 import { subscribeUnreadChatCountByLink } from '../services/nutritionistChatService';
 import { subscribePatientFoodPlans } from '../services/nutritionistService';
+import { saveMealEntryOrQueue } from '../services/pendingSyncService';
+import { subscribePatientNotifications } from '../services/groupService';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { NutritionistChatModal } from '../components/NutritionistChatModal';
 import { useStore, selectGoals, selectNotifications, selectTodayLog, selectUnreadCount } from '../store';
-import { calcMacroGoals, formatBrasiliaDate, formatKcal, formatGrams, formatNutritionDetails, getBrasiliaHour, macroPercent } from '../utils/nutrition';
+import { calcMacroGoals, formatBrasiliaDate, formatKcal, formatGrams, formatNutritionDetails, getBrasiliaHour, macroPercent, generateId } from '../utils/nutrition';
 import {
   buildValidatedProfileValues,
   formatHeightInput,
@@ -38,7 +40,7 @@ import {
   parseProfileNumber,
   validateProfileBasics,
 } from '../utils/profileValidation';
-import { ActivityLevel, BiologicalSex, FoodNutrition, FoodPlan, GoalType, MacroGoals, NutritionistPatientLink, ShoppingListItem, UserProfile } from '../types';
+import { ActivityLevel, BiologicalSex, FoodNutrition, FoodPlan, FoodPlanMeal, GoalType, MacroGoals, MealEntry, NutritionistPatientLink, ShoppingListItem, UserProfile } from '../types';
 
 const RING_SIZE = 160;
 const RING_STROKE = 14;
@@ -193,7 +195,15 @@ function mergeShoppingList(items: ShoppingListItem[]): ShoppingListItem[] {
   return Array.from(byName.values());
 }
 
-function FoodPlanCard({ plan }: { plan: FoodPlan }) {
+function FoodPlanCard({
+  plan,
+  completingMealKey,
+  onCompleteMeal,
+}: {
+  plan: FoodPlan;
+  completingMealKey?: string | null;
+  onCompleteMeal: (plan: FoodPlan, meal: FoodPlanMeal) => void;
+}) {
   const shoppingList = mergeShoppingList(plan.shoppingList);
   return (
     <View style={styles.foodPlanPanel}>
@@ -214,6 +224,19 @@ function FoodPlanCard({ plan }: { plan: FoodPlan }) {
           <Text style={styles.foodPlanMealItems}>
             {meal.items.map((item) => `${item.quantity} ${item.name}`.trim()).join(', ')}
           </Text>
+          {meal.totalNutrition ? (
+            <Text style={styles.foodPlanMealNutrition}>{formatNutritionDetails(meal.totalNutrition, { includeKcal: true })}</Text>
+          ) : null}
+          <TouchableOpacity
+            style={[styles.foodPlanDoneBtn, completingMealKey === `${plan.id}_${meal.period}_${meal.title}` && styles.foodPlanDoneBtnDisabled]}
+            onPress={() => onCompleteMeal(plan, meal)}
+            disabled={completingMealKey === `${plan.id}_${meal.period}_${meal.title}`}
+          >
+            <MaterialIcons name="check-circle" size={18} color={Colors.white} />
+            <Text style={styles.foodPlanDoneText}>
+              {completingMealKey === `${plan.id}_${meal.period}_${meal.title}` ? 'Registrando...' : 'Fiz esta refeição'}
+            </Text>
+          </TouchableOpacity>
         </View>
       ))}
       <Text style={styles.shoppingTitle}>Lista de compras</Text>
@@ -771,6 +794,8 @@ export function HomeScreen() {
   const clearAuth = useStore((s) => s.clearAuth);
   const todayLog = useStore(selectTodayLog);
   const goals = useStore(selectGoals);
+  const addEntry = useStore((s) => s.addEntry);
+  const setNotifications = useStore((s) => s.setNotifications);
   const unreadCount = useStore(selectUnreadCount);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -783,6 +808,7 @@ export function HomeScreen() {
   const [foodPlans, setFoodPlans] = useState<FoodPlan[]>([]);
   const [unreadChatCounts, setUnreadChatCounts] = useState<Record<string, number>>({});
   const [chatLink, setChatLink] = useState<NutritionistPatientLink | null>(null);
+  const [completingMealKey, setCompletingMealKey] = useState<string | null>(null);
 
   const totals: FoodNutrition = useMemo(
     () => todayLog?.totalNutrition ?? { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
@@ -845,6 +871,14 @@ export function HomeScreen() {
     return subscribePatientFoodPlans(user.id, setFoodPlans);
   }, [user]);
 
+  useEffect(() => {
+    if (!user || user.id === 'dev_user' || !isFirebaseConfigured) {
+      setNotifications([]);
+      return undefined;
+    }
+    return subscribePatientNotifications(user.id, setNotifications);
+  }, [setNotifications, user]);
+
   async function handleRespondNutritionistInvite(linkId: string, status: 'accepted' | 'rejected') {
     try {
       await respondNutritionistInvite(linkId, status);
@@ -883,6 +917,54 @@ export function HomeScreen() {
       setLogoutLoading(false);
       setLogoutConfirmOpen(false);
       clearAuth();
+    }
+  }
+
+  function createLocalFoodPlanEntry(userId: string, payload: Omit<MealEntry, 'id' | 'userId' | 'addedAt'>): MealEntry {
+    return {
+      ...payload,
+      id: generateId(),
+      userId,
+      addedAt: new Date(),
+    };
+  }
+
+  async function handleCompleteFoodPlanMeal(plan: FoodPlan, meal: FoodPlanMeal) {
+    if (!user) return;
+    const items = meal.items.filter((item) => item.nutrition);
+    if (items.length === 0) {
+      Alert.alert('Plano incompleto', 'Essa refeição não possui nutrientes calculados para registrar automaticamente.');
+      return;
+    }
+
+    const key = `${plan.id}_${meal.period}_${meal.title}`;
+    const mealGroupId = `plan_${plan.id}_${generateId()}`;
+    setCompletingMealKey(key);
+    try {
+      for (const item of items) {
+        const payload: Omit<MealEntry, 'id' | 'userId' | 'addedAt'> = {
+          foodName: `${item.name} (${item.quantity})`,
+          emoji: item.emoji ?? '🍽️',
+          quantity: item.quantityValue ?? 1,
+          unit: item.unit ?? 'porcao',
+          nutrition: item.nutrition ?? { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 },
+          mealPeriod: meal.period,
+          mealGroupId,
+          mealGroupLabel: meal.title,
+          source: 'saved',
+          savedMealId: plan.id,
+        };
+        const result = isFirebaseConfigured && user.id !== 'dev_user'
+          ? await saveMealEntryOrQueue({ userId: user.id, goals: safeGoals, payload })
+          : { entry: createLocalFoodPlanEntry(user.id, payload), queued: false };
+        addEntry(result.entry);
+      }
+      Alert.alert('Refeição registrada', 'A refeição recomendada foi adicionada ao seu dia.');
+    } catch (error) {
+      console.warn('Failed to complete food plan meal', error);
+      Alert.alert('Erro', 'Não foi possível registrar essa refeição agora.');
+    } finally {
+      setCompletingMealKey(null);
     }
   }
 
@@ -952,7 +1034,13 @@ export function HomeScreen() {
         </View>
 
         <NutritionGoalTable rows={nutritionGoalRows} totals={totals} waterMl={waterMl} />
-        {latestFoodPlan ? <FoodPlanCard plan={latestFoodPlan} /> : null}
+        {latestFoodPlan ? (
+          <FoodPlanCard
+            plan={latestFoodPlan}
+            completingMealKey={completingMealKey}
+            onCompleteMeal={handleCompleteFoodPlanMeal}
+          />
+        ) : null}
       </ScrollView>
 
       <SettingsModal visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
@@ -1094,6 +1182,10 @@ const styles = StyleSheet.create({
   foodPlanMeal: { backgroundColor: Colors.gray50, borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.xs },
   foodPlanMealTitle: { fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.bold },
   foodPlanMealItems: { marginTop: 3, fontSize: Typography.xs, color: Colors.gray600, lineHeight: 17 },
+  foodPlanMealNutrition: { marginTop: 4, fontSize: Typography.xs, color: Colors.gray400, lineHeight: 17 },
+  foodPlanDoneBtn: { marginTop: Spacing.sm, minHeight: 38, borderRadius: Radius.md, backgroundColor: Colors.green400, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs },
+  foodPlanDoneBtnDisabled: { opacity: 0.65 },
+  foodPlanDoneText: { color: Colors.white, fontSize: Typography.sm, fontWeight: Typography.bold },
   shoppingTitle: { marginTop: Spacing.sm, marginBottom: Spacing.xs, fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.bold },
   shoppingItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingVertical: 5 },
   shoppingText: { flex: 1, fontSize: Typography.sm, color: Colors.gray600 },

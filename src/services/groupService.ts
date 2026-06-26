@@ -412,6 +412,29 @@ export function subscribeGroupNotifications(
   });
 }
 
+export function subscribePatientNotifications(
+  userId: string,
+  onUpdate: (notifs: GroupNotification[]) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, COLLECTIONS.notifications),
+    where('targetUserIds', 'array-contains', userId)
+  );
+  return onSnapshot(q, (snap) => {
+    const notifs = snap.docs
+      .map((d) => {
+        const data = d.data();
+        return {
+          ...data,
+          createdAt: data.createdAt?.toDate() ?? new Date(),
+        } as GroupNotification;
+      })
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 30);
+    onUpdate(notifs);
+  });
+}
+
 export async function markNotificationsRead(
   notifIds: string[]
 ): Promise<void> {
