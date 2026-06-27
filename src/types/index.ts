@@ -4,6 +4,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  nickname?: string;
   role?: 'user' | 'nutritionist';
   avatarUrl?: string;
   createdAt: Date;
@@ -16,6 +17,8 @@ export type ActivityLevel = 1.2 | 1.375 | 1.55 | 1.725 | 1.9;
 export interface UserProfile {
   userId: string;
   name: string;
+  nickname?: string;
+  birthDate?: string;   // YYYY-MM-DD
   age: number;
   weight: number;       // kg
   height: number;       // cm
@@ -300,9 +303,13 @@ export interface CommunityPost {
   groupId: string;
   authorId: string;
   authorName: string;
+  authorNickname?: string;
   authorInitials: string;
   imageUrl: string;
   caption?: string;
+  visibility?: 'public' | 'friends' | 'private';
+  taggedUserIds?: string[];
+  taggedUserNames?: string[];
   nutrition: FoodNutrition;
   foodNames: string[];
   mealPeriod: MealPeriod;

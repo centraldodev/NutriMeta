@@ -72,6 +72,7 @@ export { app, auth, db, storage };
 
 export const COLLECTIONS = {
   users:      'users',
+  nicknames:  'nicknames',
   profiles:   'profiles',
   dailyLogs:  'dailyLogs',
   globalFoods:'globalFoods',
@@ -99,6 +100,14 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'nutritionist'
       );
       allow create, update: if request.auth != null && request.auth.uid == userId;
+    }
+
+    match /nicknames/{nickname} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.resource.data.userId == request.auth.uid;
+      allow delete: if request.auth != null
+        && resource.data.userId == request.auth.uid;
     }
 
     // Users can only read/write their own profile

@@ -102,7 +102,16 @@ export async function updatePatientProfile(profile: UserProfile): Promise<void> 
   await setDoc(
     doc(db, COLLECTIONS.profiles, profile.userId),
     {
-      ...profile,
+      age: profile.age,
+      weight: profile.weight,
+      height: profile.height,
+      sex: profile.sex,
+      goal: profile.goal,
+      activityLevel: profile.activityLevel,
+      onboardingComplete: profile.onboardingComplete,
+      groupIds: profile.groupIds,
+      macroGoals: profile.macroGoals,
+      communityPrivacy: profile.communityPrivacy,
       updatedAt: serverTimestamp(),
     },
     { merge: true }

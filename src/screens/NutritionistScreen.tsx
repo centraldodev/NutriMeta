@@ -42,6 +42,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FoodIcon } from "../components/FoodIcon";
 import { NativeTimePicker } from "../components/NativeTimePicker";
 import { NutritionistChatModal } from "../components/NutritionistChatModal";
+import { NutritionDataHelpModal } from "../components/NutritionDataHelpModal";
 import { ShoppingPdfModal } from "../components/ShoppingPdfModal";
 import { useStore } from "../store";
 import {
@@ -72,11 +73,11 @@ import {
 } from "../utils/nutrition";
 import {
   buildValidatedProfileValues,
+  birthDateFromAge,
+  formatBirthDateInput,
   formatHeightInput,
   formatWeightInput,
-  maskAgeInput,
   maskHeightInput,
-  maskNameInput,
   maskWeightInput,
   parseProfileNumber,
   validateProfileBasics,
@@ -780,8 +781,6 @@ function PatientEditModal({
   onClose: () => void;
   onSave: (profile: UserProfile) => Promise<void>;
 }) {
-  const [name, setName] = useState("");
-  const [age, setAge] = useState("");
   const [weight, setWeight] = useState("");
   const [height, setHeight] = useState("");
   const [sex, setSex] = useState<BiologicalSex>("M");
@@ -795,8 +794,6 @@ function PatientEditModal({
   useEffect(() => {
     if (!visible || !patient) return;
     const activeGoals = patient.macroGoals ?? calcMacroGoals(patient);
-    setName(patient.name);
-    setAge(String(patient.age));
     setWeight(formatWeightInput(patient.weight));
     setHeight(formatHeightInput(patient.height));
     setSex(patient.sex);
@@ -811,20 +808,22 @@ function PatientEditModal({
 
   function handleRecalculateGoals() {
     if (!patient) return;
-    const error = validateProfileBasics({ name, age, weight, height });
+    const patientBirthDate = patient.birthDate ?? birthDateFromAge(patient.age);
+    const error = validateProfileBasics({ name: patient.name, birthDate: patientBirthDate, weight, height });
     if (error) {
       Alert.alert("Confira os dados", error);
       return;
     }
     const profileValues = buildValidatedProfileValues({
-      age,
+      birthDate: patientBirthDate,
+      age: String(patient.age),
       weight,
       height,
       fallback: patient,
     });
     const preview: UserProfile = {
       ...patient,
-      name: name.trim() || patient.name,
+      birthDate: profileValues.birthDate,
       age: profileValues.age,
       weight: profileValues.weight,
       height: profileValues.height,
@@ -837,20 +836,22 @@ function PatientEditModal({
 
   async function handleSave() {
     if (!patient) return;
-    const error = validateProfileBasics({ name, age, weight, height });
+    const patientBirthDate = patient.birthDate ?? birthDateFromAge(patient.age);
+    const error = validateProfileBasics({ name: patient.name, birthDate: patientBirthDate, weight, height });
     if (error) {
       Alert.alert("Confira os dados", error);
       return;
     }
     const profileValues = buildValidatedProfileValues({
-      age,
+      birthDate: patientBirthDate,
+      age: String(patient.age),
       weight,
       height,
       fallback: patient,
     });
     const profileBase: UserProfile = {
       ...patient,
-      name: name.trim() || patient.name,
+      birthDate: profileValues.birthDate,
       age: profileValues.age,
       weight: profileValues.weight,
       height: profileValues.height,
@@ -899,18 +900,40 @@ function PatientEditModal({
             contentContainerStyle={styles.modalScroll}
           >
             <View style={styles.fieldGrid}>
-              <NutritionistField
-                label="Nome"
-                value={name}
-                onChangeText={(v) => setName(maskNameInput(v))}
-              />
-              <NutritionistField
-                label="Idade"
-                value={age}
-                onChangeText={(v) => setAge(maskAgeInput(v))}
-                keyboardType="numeric"
-                maxLength={3}
-              />
+              <View style={styles.lockedPatientField}>
+                <View style={styles.lockedPatientFieldHeader}>
+                  <Text style={styles.fieldLabel}>Nome</Text>
+                  <MaterialIcons name="lock-outline" size={15} color={Colors.gray400} />
+                </View>
+                <Text style={styles.lockedPatientValue}>{patient?.name ?? "-"}</Text>
+              </View>
+              <View style={styles.lockedPatientField}>
+                <View style={styles.lockedPatientFieldHeader}>
+                  <Text style={styles.fieldLabel}>Nickname</Text>
+                  <MaterialIcons name="lock-outline" size={15} color={Colors.gray400} />
+                </View>
+                <Text style={styles.lockedPatientValue}>
+                  {patient?.nickname ? `@${patient.nickname}` : "Não definido"}
+                </Text>
+              </View>
+              <View style={styles.lockedPatientField}>
+                <View style={styles.lockedPatientFieldHeader}>
+                  <Text style={styles.fieldLabel}>Nascimento</Text>
+                  <MaterialIcons name="lock-outline" size={15} color={Colors.gray400} />
+                </View>
+                <Text style={styles.lockedPatientValue}>
+                  {formatBirthDateInput(patient?.birthDate) || "Não definido"}
+                </Text>
+              </View>
+              <View style={styles.lockedPatientField}>
+                <View style={styles.lockedPatientFieldHeader}>
+                  <Text style={styles.fieldLabel}>Idade</Text>
+                  <MaterialIcons name="lock-outline" size={15} color={Colors.gray400} />
+                </View>
+                <Text style={styles.lockedPatientValue}>
+                  {patient ? `${patient.age} anos` : "-"}
+                </Text>
+              </View>
               <NutritionistField
                 label="Peso"
                 value={weight}
@@ -1010,8 +1033,10 @@ function PatientEditModal({
               <TouchableOpacity
                 style={styles.recalcBtn}
                 onPress={handleRecalculateGoals}
+                accessibilityRole="button"
+                accessibilityLabel="Recalcular metas nutricionais"
               >
-                <Text style={styles.recalcText}>Recalcular</Text>
+                <MaterialIcons name="refresh" size={20} color={Colors.green600} />
               </TouchableOpacity>
             </View>
             <View style={styles.fieldGrid}>
@@ -1712,8 +1737,11 @@ export function NutritionistScreen() {
   const [editPatientOpen, setEditPatientOpen] = useState(false);
   const [foodPlanOpen, setFoodPlanOpen] = useState(false);
   const [editingFoodPlan, setEditingFoodPlan] = useState<FoodPlan | null>(null);
-  const [shoppingPdfPlan, setShoppingPdfPlan] = useState<FoodPlan | null>(null);
+  const [shoppingPdfOpen, setShoppingPdfOpen] = useState(false);
   const [foodPlans, setFoodPlans] = useState<FoodPlan[]>([]);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const [chatNotificationsOpen, setChatNotificationsOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
@@ -1733,6 +1761,13 @@ export function NutritionistScreen() {
   const selectedLog = logsByDate.get(selectedDate) ?? null;
   const selectedPatientLink =
     acceptedLinks.find((link) => link.patientId === selectedPatientId) ?? null;
+  const unreadChatLinks = acceptedLinks.filter(
+    (link) => (unreadChatCounts[link.id] ?? 0) > 0,
+  );
+  const unreadChatTotal = unreadChatLinks.reduce(
+    (sum, link) => sum + (unreadChatCounts[link.id] ?? 0),
+    0,
+  );
   const patientGoals = useMemo(
     () =>
       selectedPatient?.macroGoals ??
@@ -2079,20 +2114,68 @@ export function NutritionistScreen() {
         </View>
         <View style={styles.headerActions}>
           <TouchableOpacity
-            accessibilityLabel="Adicionar paciente"
-            style={styles.headerAddBtn}
-            onPress={() => setInviteModalOpen(true)}
+            accessibilityLabel="Notificações"
+            style={styles.headerNotifyBtn}
+            onPress={() => {
+              setHeaderMenuOpen(false);
+              setChatNotificationsOpen(true);
+            }}
           >
-            <MaterialIcons name="add" size={24} color={Colors.white} />
+            <MaterialIcons
+              name="notifications-none"
+              size={21}
+              color={Colors.green600}
+            />
+            {unreadChatTotal > 0 ? (
+              <View style={styles.headerNotificationDot} />
+            ) : null}
           </TouchableOpacity>
           <TouchableOpacity
-            accessibilityLabel="Sair"
-            style={styles.logoutBtn}
-            onPress={() => setLogoutConfirmOpen(true)}
+            accessibilityLabel="Abrir menu"
+            accessibilityState={{ expanded: headerMenuOpen }}
+            style={styles.headerNotifyBtn}
+            onPress={() => setHeaderMenuOpen((open) => !open)}
           >
-            <MaterialIcons name="logout" size={19} color={Colors.green600} />
-            <Text style={styles.logoutText}>Sair</Text>
+            <MaterialIcons
+              name={headerMenuOpen ? "close" : "menu"}
+              size={24}
+              color={Colors.green600}
+            />
           </TouchableOpacity>
+          {headerMenuOpen ? (
+            <View style={styles.headerMenu}>
+              <TouchableOpacity
+                style={styles.headerMenuItem}
+                onPress={() => {
+                  setHeaderMenuOpen(false);
+                  setInviteModalOpen(true);
+                }}
+              >
+                <MaterialIcons name="person-add-alt-1" size={20} color={Colors.green600} />
+                <Text style={styles.headerMenuText}>Adicionar paciente</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.headerMenuItem}
+                onPress={() => {
+                  setHeaderMenuOpen(false);
+                  setHelpOpen(true);
+                }}
+              >
+                <MaterialIcons name="help-outline" size={20} color={Colors.green600} />
+                <Text style={styles.headerMenuText}>Ajuda</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.headerMenuItem}
+                onPress={() => {
+                  setHeaderMenuOpen(false);
+                  setLogoutConfirmOpen(true);
+                }}
+              >
+                <MaterialIcons name="logout" size={20} color={Colors.danger} />
+                <Text style={[styles.headerMenuText, styles.headerMenuTextDanger]}>Sair</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
         </View>
       </View>
 
@@ -2272,6 +2355,14 @@ export function NutritionistScreen() {
                 </View>
                 <View style={styles.summaryGrid}>
                   <InfoCard
+                    label="Nascimento"
+                    value={formatBirthDateInput(selectedPatient.birthDate) || "Não definido"}
+                  />
+                  <InfoCard
+                    label="Idade"
+                    value={`${selectedPatient.age} anos`}
+                  />
+                  <InfoCard
                     label="Objetivo"
                     value={goalLabel(selectedPatient.goal)}
                   />
@@ -2319,7 +2410,7 @@ export function NutritionistScreen() {
                     {foodPlans[0] ? (
                       <TouchableOpacity
                         style={styles.chatBtn}
-                        onPress={() => setShoppingPdfPlan(foodPlans[0])}
+                        onPress={() => setShoppingPdfOpen(true)}
                       >
                         <MaterialIcons
                           name="picture-as-pdf"
@@ -3006,6 +3097,68 @@ export function NutritionistScreen() {
         currentUserName={user?.name ?? "Nutricionista"}
         onClose={() => setChatLink(null)}
       />
+      <NutritionDataHelpModal
+        visible={helpOpen}
+        onClose={() => setHelpOpen(false)}
+      />
+      <Modal
+        visible={chatNotificationsOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setChatNotificationsOpen(false)}
+      >
+        <View style={styles.modalBg}>
+          <TouchableOpacity
+            style={styles.modalBackdrop}
+            onPress={() => setChatNotificationsOpen(false)}
+          />
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Notificações</Text>
+              <TouchableOpacity
+                style={styles.modalCloseBtn}
+                onPress={() => setChatNotificationsOpen(false)}
+              >
+                <MaterialIcons name="close" size={20} color={Colors.gray600} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView contentContainerStyle={styles.modalScroll}>
+              {unreadChatLinks.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <MaterialIcons
+                    name="notifications-none"
+                    size={34}
+                    color={Colors.gray400}
+                  />
+                  <Text style={styles.emptyText}>
+                    Nenhuma mensagem nova no momento.
+                  </Text>
+                </View>
+              ) : (
+                unreadChatLinks.map((link) => (
+                  <TouchableOpacity
+                    key={link.id}
+                    style={styles.notificationCard}
+                    onPress={() => {
+                      setChatNotificationsOpen(false);
+                      setChatLink(link);
+                    }}
+                  >
+                    <Text style={styles.notificationTitle}>Mensagem nova</Text>
+                    <Text style={styles.notificationText}>
+                      {link.patientName} enviou {unreadChatCounts[link.id] ?? 0} mensagem(ns).
+                    </Text>
+                    <Text style={styles.notificationMeta}>
+                      Toque para abrir o chat.
+                    </Text>
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
       <ConfirmDialog
         visible={logoutConfirmOpen}
         title="Sair da conta"
@@ -3034,9 +3187,10 @@ export function NutritionistScreen() {
         onSave={handleSaveFoodPlan}
       />
       <ShoppingPdfModal
-        visible={Boolean(shoppingPdfPlan)}
-        plan={shoppingPdfPlan}
-        onClose={() => setShoppingPdfPlan(null)}
+        visible={shoppingPdfOpen}
+        plan={foodPlans[0] ?? null}
+        plans={foodPlans}
+        onClose={() => setShoppingPdfOpen(false)}
       />
     </SafeAreaView>
   );
@@ -3119,6 +3273,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: Spacing.sm,
+    zIndex: 100,
   },
   headerIdentity: {
     flex: 1,
@@ -3136,17 +3291,53 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   headerText: { flex: 1, minWidth: 0 },
-  headerActions: { flexDirection: "row", alignItems: "center", gap: 6 },
-  headerAddBtn: {
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 6, position: "relative", zIndex: 200 },
+  headerNotifyBtn: {
     width: 40,
     height: 40,
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 5,
-    backgroundColor: Colors.green600,
+    backgroundColor: Colors.green50,
+    borderWidth: 1,
+    borderColor: Colors.green100,
     borderRadius: Radius.full,
   },
+  headerNotificationDot: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Colors.danger,
+  },
+  headerMenu: {
+    position: "absolute",
+    top: 48,
+    right: 0,
+    width: 218,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.white,
+    paddingVertical: 6,
+    zIndex: 300,
+    ...Shadows.md,
+  },
+  headerMenuItem: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  headerMenuText: {
+    flex: 1,
+    fontSize: Typography.sm,
+    color: Colors.gray800,
+    fontWeight: Typography.semibold,
+  },
+  headerMenuTextDanger: { color: Colors.danger },
   eyebrow: {
     fontSize: Typography.xs,
     color: Colors.green600,
@@ -3164,20 +3355,6 @@ const styles = StyleSheet.create({
     fontSize: Typography.sm,
     color: Colors.gray400,
     lineHeight: 18,
-  },
-  logoutBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: Colors.green50,
-    borderRadius: Radius.full,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 8,
-  },
-  logoutText: {
-    color: Colors.green600,
-    fontWeight: Typography.bold,
-    fontSize: Typography.xs,
   },
   scroll: {
     width: "100%",
@@ -3691,6 +3868,28 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   mutedText: { fontSize: Typography.sm, color: Colors.gray400, lineHeight: 18 },
+  notificationCard: {
+    backgroundColor: Colors.gray50,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  notificationTitle: {
+    fontSize: Typography.sm,
+    color: Colors.gray800,
+    fontWeight: Typography.bold,
+    marginBottom: 4,
+  },
+  notificationText: {
+    fontSize: Typography.sm,
+    color: Colors.gray600,
+    lineHeight: 19,
+  },
+  notificationMeta: {
+    marginTop: 4,
+    fontSize: Typography.xs,
+    color: Colors.gray400,
+  },
   emptyState: {
     alignItems: "center",
     backgroundColor: Colors.white,
@@ -3789,6 +3988,27 @@ const styles = StyleSheet.create({
   },
   fieldWrap: { width: "48%" },
   fieldWrapWide: { width: "100%" },
+  lockedPatientField: {
+    width: "48%",
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.gray50,
+    padding: Spacing.sm,
+    minHeight: 66,
+    justifyContent: "center",
+  },
+  lockedPatientFieldHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Spacing.xs,
+  },
+  lockedPatientValue: {
+    fontSize: Typography.sm,
+    fontWeight: Typography.semibold,
+    color: Colors.gray800,
+  },
   fieldLabel: {
     fontSize: Typography.xs,
     fontWeight: Typography.semibold,
@@ -3880,17 +4100,14 @@ const styles = StyleSheet.create({
   },
   pillTextActive: { color: Colors.green600 },
   recalcBtn: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+    width: 40,
+    height: 40,
     borderRadius: Radius.md,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: Colors.green50,
     borderWidth: 1,
     borderColor: Colors.green400,
-  },
-  recalcText: {
-    color: Colors.green600,
-    fontWeight: Typography.bold,
-    fontSize: Typography.sm,
   },
   planOptionPanel: {
     marginTop: Spacing.sm,

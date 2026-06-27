@@ -17,6 +17,7 @@ import {
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { db, storage, COLLECTIONS } from './firebase';
 import { getRecentDailyLogs } from './nutritionService';
+import { normalizeNickname } from './authService';
 import {
   Group,
   CommunityComment,
@@ -44,6 +45,12 @@ const GLOBAL_COMMUNITY_ID = 'global';
 const COMMUNITY_POSTS_COLLECTION = COLLECTIONS.communityPosts || 'communityPosts';
 const COMMUNITY_FOLLOWS_COLLECTION = COLLECTIONS.communityFollows || 'communityFollows';
 const COMMUNITY_COMMENTS_COLLECTION = COLLECTIONS.communityComments || 'communityComments';
+
+export type CommunityFriend = {
+  id: string;
+  name: string;
+  nickname?: string;
+};
 
 function readDate(value: unknown, fallback = new Date()): Date {
   if (value instanceof Date) return value;
@@ -89,18 +96,26 @@ async function uploadCommunityImage(
 export async function addCommunityPost({
   authorId,
   authorName,
+  authorNickname,
   imageUri,
   imageMimeType,
   caption,
+  visibility = 'public',
+  taggedUserIds = [],
+  taggedUserNames = [],
   nutrition,
   foodNames,
   mealPeriod,
 }: {
   authorId: string;
   authorName: string;
+  authorNickname?: string;
   imageUri: string;
   imageMimeType?: string;
   caption?: string;
+  visibility?: CommunityPost['visibility'];
+  taggedUserIds?: string[];
+  taggedUserNames?: string[];
   nutrition: FoodNutrition;
   foodNames: string[];
   mealPeriod: CommunityPost['mealPeriod'];
@@ -112,9 +127,13 @@ export async function addCommunityPost({
     groupId: GLOBAL_COMMUNITY_ID,
     authorId,
     authorName,
+    authorNickname,
     authorInitials: getInitials(authorName),
     imageUrl,
     caption,
+    visibility,
+    taggedUserIds,
+    taggedUserNames,
     nutrition,
     foodNames,
     mealPeriod,
@@ -127,6 +146,41 @@ export async function addCommunityPost({
   });
 
   return post;
+}
+
+export async function updateCommunityPost({
+  postId,
+  authorId,
+  caption,
+  visibility,
+  taggedUserIds,
+  taggedUserNames,
+}: {
+  postId: string;
+  authorId: string;
+  caption?: string;
+  visibility?: CommunityPost['visibility'];
+  taggedUserIds?: string[];
+  taggedUserNames?: string[];
+}): Promise<void> {
+  const ref = doc(db, COMMUNITY_POSTS_COLLECTION, postId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('post_not_found');
+  if (snap.data().authorId !== authorId) throw new Error('permission_denied');
+  await updateDoc(ref, {
+    caption,
+    visibility,
+    taggedUserIds: taggedUserIds ?? [],
+    taggedUserNames: taggedUserNames ?? [],
+  });
+}
+
+export async function deleteCommunityPost(postId: string, authorId: string): Promise<void> {
+  const ref = doc(db, COMMUNITY_POSTS_COLLECTION, postId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+  if (snap.data().authorId !== authorId) throw new Error('permission_denied');
+  await deleteDoc(ref);
 }
 
 export function subscribeCommunityPosts(
@@ -158,13 +212,52 @@ export function subscribeFollowing(
   });
 }
 
-export async function followCommunityUser(followerId: string, followingId: string): Promise<void> {
+export function subscribeCommunityFriends(
+  userId: string,
+  onUpdate: (friends: CommunityFriend[]) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, COMMUNITY_FOLLOWS_COLLECTION),
+    where('followerId', '==', userId)
+  );
+  return onSnapshot(q, (snap) => {
+    onUpdate(snap.docs.map((docSnap) => {
+      const data = docSnap.data();
+      return {
+        id: data.followingId as string,
+        name: (data.followingName as string | undefined) ?? 'Usuário',
+        nickname: data.followingNickname as string | undefined,
+      };
+    }).sort((a, b) => (a.nickname ?? a.name).localeCompare(b.nickname ?? b.name)));
+  });
+}
+
+export async function findCommunityUserByNickname(nicknameInput: string): Promise<CommunityFriend | null> {
+  const nickname = normalizeNickname(nicknameInput);
+  if (!nickname) return null;
+  const snap = await getDoc(doc(db, COLLECTIONS.nicknames, nickname));
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  return {
+    id: data.userId as string,
+    name: (data.displayName as string | undefined) ?? 'Usuário',
+    nickname: (data.nickname as string | undefined) ?? nickname,
+  };
+}
+
+export async function followCommunityUser(
+  followerId: string,
+  followingId: string,
+  following?: Pick<CommunityFriend, 'name' | 'nickname'>
+): Promise<void> {
   if (followerId === followingId) return;
   await setDoc(doc(db, COMMUNITY_FOLLOWS_COLLECTION, `${followerId}_${followingId}`), {
     followerId,
     followingId,
+    followingName: following?.name,
+    followingNickname: following?.nickname,
     createdAt: serverTimestamp(),
-  });
+  }, { merge: true });
 }
 
 export async function unfollowCommunityUser(followerId: string, followingId: string): Promise<void> {

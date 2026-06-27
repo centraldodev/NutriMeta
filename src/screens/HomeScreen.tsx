@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Image,
-  Linking,
   Modal,
   Platform,
   ScrollView,
@@ -19,25 +18,33 @@ import { MaterialIcons } from '@expo/vector-icons';
 
 import { Colors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
 import { isFirebaseConfigured } from '../config';
-import { saveUserProfile, signOut } from '../services/authService';
+import { normalizeNickname, saveUserProfile, signOut, validateNickname } from '../services/authService';
 import { respondNutritionistInvite, subscribePatientAcceptedNutritionistLinks, subscribePatientNutritionistInvites } from '../services/nutritionistLinkService';
 import { subscribeUnreadChatCountByLink } from '../services/nutritionistChatService';
 import { subscribePatientFoodPlans } from '../services/nutritionistService';
 import { saveMealEntryOrQueue } from '../services/pendingSyncService';
-import { subscribePatientNotifications } from '../services/groupService';
+import { markNotificationsRead, subscribePatientNotifications } from '../services/groupService';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { NativeDatePicker } from '../components/NativeDatePicker';
 import { NutritionistChatModal } from '../components/NutritionistChatModal';
 import { ShoppingPdfModal } from '../components/ShoppingPdfModal';
+import { NutritionDataHelpModal } from '../components/NutritionDataHelpModal';
 import { useStore, selectGoals, selectNotifications, selectTodayLog, selectUnreadCount } from '../store';
 import { calcMacroGoals, formatBrasiliaDate, formatKcal, formatGrams, formatNutritionDetails, getBrasiliaHour, macroPercent, generateId } from '../utils/nutrition';
 import {
   buildValidatedProfileValues,
+  birthDateFromAge,
+  birthDateToDate,
+  calculateAgeFromBirthDate,
+  dateToBirthDateString,
+  formatBirthDateInput,
   formatHeightInput,
   formatWeightInput,
-  maskAgeInput,
+  maskBirthDateInput,
   maskHeightInput,
   maskNameInput,
   maskWeightInput,
+  normalizeBirthDateInput,
   parseProfileNumber,
   validateProfileBasics,
 } from '../utils/profileValidation';
@@ -69,6 +76,34 @@ const DEFAULT_GOALS: MacroGoals = {
   vitaminB12: 2.4,
   folate: 400,
 };
+
+type EditableGoalKey = keyof MacroGoals;
+
+const EDITABLE_GOAL_ROWS: {
+  key: EditableGoalKey;
+  label: string;
+  unit: string;
+}[] = [
+  { key: 'kcal', label: 'Calorias', unit: 'kcal' },
+  { key: 'protein', label: 'Proteína', unit: 'g' },
+  { key: 'carbs', label: 'Carboidratos', unit: 'g' },
+  { key: 'fat', label: 'Gorduras', unit: 'g' },
+  { key: 'fiber', label: 'Fibras', unit: 'g' },
+  { key: 'water', label: 'Água', unit: 'ml' },
+  { key: 'sugar', label: 'Açúcar máx.', unit: 'g' },
+  { key: 'sodium', label: 'Sódio máx.', unit: 'mg' },
+  { key: 'calcium', label: 'Cálcio', unit: 'mg' },
+  { key: 'iron', label: 'Ferro', unit: 'mg' },
+  { key: 'potassium', label: 'Potássio', unit: 'mg' },
+  { key: 'magnesium', label: 'Magnésio', unit: 'mg' },
+  { key: 'zinc', label: 'Zinco', unit: 'mg' },
+  { key: 'vitaminA', label: 'Vitamina A', unit: 'mcg' },
+  { key: 'vitaminC', label: 'Vitamina C', unit: 'mg' },
+  { key: 'vitaminD', label: 'Vitamina D', unit: 'mcg' },
+  { key: 'vitaminE', label: 'Vitamina E', unit: 'mg' },
+  { key: 'vitaminB12', label: 'Vitamina B12', unit: 'mcg' },
+  { key: 'folate', label: 'Folato', unit: 'mcg' },
+];
 
 type NutritionGoalMode = 'target' | 'limit';
 
@@ -188,6 +223,37 @@ function parseNumber(value: string, fallback: number) {
   return parseProfileNumber(value, fallback);
 }
 
+function formatGoalInputs(goals: MacroGoals): Record<EditableGoalKey, string> {
+  return EDITABLE_GOAL_ROWS.reduce(
+    (inputs, item) => ({
+      ...inputs,
+      [item.key]: typeof goals[item.key] === 'number' ? String(goals[item.key]) : '',
+    }),
+    {} as Record<EditableGoalKey, string>,
+  );
+}
+
+function buildGoalsFromInputs(
+  inputs: Record<EditableGoalKey, string>,
+  fallback: MacroGoals = DEFAULT_GOALS,
+): MacroGoals {
+  const goals = { ...fallback } as MacroGoals;
+  EDITABLE_GOAL_ROWS.forEach(({ key }) => {
+    const fallbackValue = fallback[key] ?? DEFAULT_GOALS[key] ?? 0;
+    const value = parseNumber(inputs[key], typeof fallbackValue === 'number' ? fallbackValue : 0);
+    goals[key] = Math.round(value) as never;
+  });
+  return goals;
+}
+
+function makeFoodPlanMealKey(planId: string, meal: FoodPlanMeal, mealIndex: number) {
+  return `${planId}_${mealIndex}_${meal.period}_${meal.title}`;
+}
+
+function makeLegacyFoodPlanMealKey(planId: string, meal: FoodPlanMeal) {
+  return `${planId}_${meal.period}_${meal.title}`;
+}
+
 function FoodPlanCard({
   plan,
   completingMealKey,
@@ -196,22 +262,35 @@ function FoodPlanCard({
   selectedOptions,
   openOptionKey,
   skippedMealKeys,
+  completedMealKeys,
   onSelectOption,
   onToggleOptions,
   onSkipMeal,
 }: {
   plan: FoodPlan;
   completingMealKey?: string | null;
-  onCompleteMeal: (plan: FoodPlan, meal: FoodPlanMeal) => void;
-  onOpenShoppingPdf: (plan: FoodPlan) => void;
+  onCompleteMeal: (plan: FoodPlan, meal: FoodPlanMeal, mealIndex: number) => void;
+  onOpenShoppingPdf: () => void;
   selectedOptions: Record<string, string>;
   openOptionKey: string | null;
   skippedMealKeys: Record<string, boolean>;
+  completedMealKeys: Record<string, boolean>;
   onSelectOption: (mealKey: string, optionId: string) => void;
   onToggleOptions: (mealKey: string) => void;
   onSkipMeal: (mealKey: string) => void;
 }) {
-  const mealKey = (meal: FoodPlanMeal) => `${plan.id}_${meal.period}_${meal.title}`;
+  const plannedMeals = plan.meals.map((meal, index) => ({
+    meal,
+    index,
+    key: makeFoodPlanMealKey(plan.id, meal, index),
+    legacyKey: makeLegacyFoodPlanMealKey(plan.id, meal),
+  }));
+  const legacyKeyCounts = plannedMeals.reduce<Record<string, number>>((counts, item) => {
+    counts[item.legacyKey] = (counts[item.legacyKey] ?? 0) + 1;
+    return counts;
+  }, {});
+  const isMealCompleted = (item: { key: string; legacyKey: string }) =>
+    completedMealKeys[item.key] || (legacyKeyCounts[item.legacyKey] === 1 && completedMealKeys[item.legacyKey]);
   const mealOptions = (meal: FoodPlanMeal) => [
     {
       id: 'main',
@@ -237,6 +316,9 @@ function FoodPlanCard({
     items: option.items,
     totalNutrition: option.totalNutrition,
   });
+  const visibleMeals = plannedMeals
+    .filter((item) => !isMealCompleted(item))
+    .slice(0, 2);
 
   return (
     <View style={styles.foodPlanPanel}>
@@ -248,21 +330,26 @@ function FoodPlanCard({
         <Text style={styles.foodPlanAuthor}>{plan.nutritionistName}</Text>
       </View>
       {plan.notes ? <Text style={styles.foodPlanNotes}>{plan.notes}</Text> : null}
-      {plan.totalNutrition ? (
-        <Text style={styles.foodPlanNotes}>{formatNutritionDetails(plan.totalNutrition, { includeKcal: true })}</Text>
+      {visibleMeals.length === 0 ? (
+        <View style={styles.foodPlanCompleteBox}>
+          <MaterialIcons name="task-alt" size={22} color={Colors.green600} />
+          <Text style={styles.foodPlanCompleteText}>
+            Todas as refeições do plano foram marcadas hoje.
+          </Text>
+        </View>
       ) : null}
-      {plan.meals.slice(0, 4).map((meal) => {
-        const key = mealKey(meal);
+      {visibleMeals.map(({ meal, index, key, legacyKey }) => {
         const options = mealOptions(meal);
         const selectedOptionId = selectedOptions[key] ?? 'main';
         const selectedOption =
           options.find((option) => option.id === selectedOptionId) ?? options[0];
         const selectedMeal = selectedMealFromOption(meal, selectedOption);
         const isSkipped = skippedMealKeys[key];
+        const isCompleted = isMealCompleted({ key, legacyKey });
         const isCompleting = completingMealKey === key;
 
         return (
-          <View key={`${meal.period}_${meal.title}`} style={[styles.foodPlanMeal, isSkipped && styles.foodPlanMealSkipped]}>
+          <View key={key} style={[styles.foodPlanMeal, isSkipped && styles.foodPlanMealSkipped]}>
             <View style={styles.foodPlanMealHeader}>
               <View style={styles.foodPlanMealHeaderText}>
                 <Text style={styles.foodPlanMealTitle}>{meal.time ? `${meal.time} · ${meal.title}` : meal.title}</Text>
@@ -271,7 +358,7 @@ function FoodPlanCard({
             <View style={styles.foodPlanMealHeaderActions}>
               <TouchableOpacity
                 style={styles.foodPlanShoppingIconBtn}
-                onPress={() => onOpenShoppingPdf(plan)}
+                onPress={onOpenShoppingPdf}
                 accessibilityRole="button"
                 accessibilityLabel="Abrir lista de compras em PDF"
               >
@@ -336,13 +423,17 @@ function FoodPlanCard({
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.foodPlanDoneBtn, (isCompleting || isSkipped) && styles.foodPlanDoneBtnDisabled]}
-                onPress={() => onCompleteMeal(plan, selectedMeal)}
-                disabled={isCompleting || isSkipped}
+                style={[
+                  styles.foodPlanDoneBtn,
+                  isCompleted && styles.foodPlanDoneBtnCompleted,
+                  (isCompleting || isSkipped || isCompleted) && styles.foodPlanDoneBtnDisabled,
+                ]}
+                onPress={() => onCompleteMeal(plan, selectedMeal, index)}
+                disabled={isCompleting || isSkipped || isCompleted}
               >
-                <MaterialIcons name="check-circle" size={18} color={Colors.white} />
+                <MaterialIcons name={isCompleted ? 'task-alt' : 'check-circle'} size={18} color={Colors.white} />
                 <Text style={styles.foodPlanDoneText}>
-                  {isCompleting ? 'Registrando...' : 'Fiz esta refeição'}
+                  {isCompleted ? 'Refeição marcada' : isCompleting ? 'Registrando...' : 'Fiz esta refeição'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -353,7 +444,6 @@ function FoodPlanCard({
   );
 }
 function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
-  type BasicGoalKey = 'kcal' | 'protein' | 'carbs' | 'fat' | 'fiber' | 'water' | 'sugar' | 'sodium';
   const user = useStore((s) => s.user);
   const profile = useStore((s) => s.profile);
   const goals = useStore(selectGoals);
@@ -362,63 +452,61 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
   const setGoals = useStore((s) => s.setGoals);
 
   const [name, setName] = useState('');
-  const [age, setAge] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [birthDate, setBirthDate] = useState('');
   const [weight, setWeight] = useState('');
   const [height, setHeight] = useState('');
   const [sex, setSex] = useState<BiologicalSex>('M');
   const [goalType, setGoalType] = useState<GoalType>('maintain');
   const [activity, setActivity] = useState<ActivityLevel>(1.55);
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>();
-  const [goalInputs, setGoalInputs] = useState<Record<BasicGoalKey, string>>({
-    kcal: '',
-    protein: '',
-    carbs: '',
-    fat: '',
-    fiber: '',
-    water: '',
-    sugar: '',
-    sodium: '',
-  });
+  const [goalInputs, setGoalInputs] = useState<Record<EditableGoalKey, string>>(
+    formatGoalInputs(DEFAULT_GOALS),
+  );
   const [saving, setSaving] = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [birthDateEditing, setBirthDateEditing] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
     const activeGoals = { ...DEFAULT_GOALS, ...(profile?.macroGoals ?? goals ?? {}) };
     setName(profile?.name ?? user?.name ?? '');
-    setAge(String(profile?.age ?? ''));
+    setNickname(profile?.nickname ?? user?.nickname ?? '');
+    setBirthDate(profile?.birthDate ?? (profile?.age ? birthDateFromAge(profile.age) : ''));
+    setBirthDateEditing(false);
     setWeight(formatWeightInput(profile?.weight));
     setHeight(formatHeightInput(profile?.height));
     setSex(profile?.sex ?? 'M');
     setGoalType(profile?.goal ?? 'maintain');
     setActivity(profile?.activityLevel ?? 1.55);
     setAvatarUrl(user?.avatarUrl);
-    setGoalInputs({
-      kcal: String(activeGoals.kcal),
-      protein: String(activeGoals.protein),
-      carbs: String(activeGoals.carbs),
-      fat: String(activeGoals.fat),
-      fiber: String(activeGoals.fiber),
-      water: String(activeGoals.water),
-      sugar: String(activeGoals.sugar),
-      sodium: String(activeGoals.sodium),
-    });
+    setGoalInputs(formatGoalInputs(activeGoals));
   }, [visible, goals, profile, user]);
 
-  function updateGoalInput(key: BasicGoalKey, value: string) {
+  function updateGoalInput(key: EditableGoalKey, value: string) {
     setGoalInputs((current) => ({ ...current, [key]: value }));
   }
 
   function buildProfile(): UserProfile | null {
     if (!user) return null;
-    const error = validateProfileBasics({ name, age, weight, height });
+    const normalizedBirthDate = normalizeBirthDateInput(birthDate);
+    const error = validateProfileBasics({ name, birthDate: normalizedBirthDate, weight, height });
     if (error) {
       Alert.alert('Confira seus dados', error);
       return null;
     }
-    const profileValues = buildValidatedProfileValues({ age, weight, height, fallback: profile ?? undefined });
+    const nicknameValue = nickname.trim();
+    const nicknameError = nicknameValue ? validateNickname(nicknameValue) : null;
+    if (nicknameError) {
+      Alert.alert('Confira seu nickname', nicknameError);
+      return null;
+    }
+    const profileValues = buildValidatedProfileValues({ birthDate: normalizedBirthDate, weight, height, fallback: profile ?? undefined });
     const nextProfile: UserProfile = {
       userId: user.id,
       name: name.trim() || user.name,
+      nickname: nicknameValue ? normalizeNickname(nicknameValue) : undefined,
+      birthDate: profileValues.birthDate,
       age: profileValues.age,
       weight: profileValues.weight,
       height: profileValues.height,
@@ -445,16 +533,7 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
     const nextProfile = buildProfile();
     if (!nextProfile) return;
     const calculated = calcMacroGoals(nextProfile);
-    setGoalInputs({
-      kcal: String(calculated.kcal),
-      protein: String(calculated.protein),
-      carbs: String(calculated.carbs),
-      fat: String(calculated.fat),
-      fiber: String(calculated.fiber),
-      water: String(calculated.water),
-      sugar: String(calculated.sugar),
-      sodium: String(calculated.sodium),
-    });
+    setGoalInputs(formatGoalInputs(calculated));
   }
 
   async function handlePickPhoto() {
@@ -481,30 +560,28 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
     const nextProfile = buildProfile();
     if (!nextProfile) return;
 
-    const nextGoals: MacroGoals = {
+    const nextGoals = buildGoalsFromInputs(goalInputs, {
+      ...DEFAULT_GOALS,
       ...(profile?.macroGoals ?? goals ?? {}),
-      kcal: Math.round(parseNumber(goalInputs.kcal, DEFAULT_GOALS.kcal)),
-      protein: Math.round(parseNumber(goalInputs.protein, DEFAULT_GOALS.protein)),
-      carbs: Math.round(parseNumber(goalInputs.carbs, DEFAULT_GOALS.carbs)),
-      fat: Math.round(parseNumber(goalInputs.fat, DEFAULT_GOALS.fat)),
-      fiber: Math.round(parseNumber(goalInputs.fiber, DEFAULT_GOALS.fiber)),
-      water: Math.round(parseNumber(goalInputs.water, DEFAULT_GOALS.water)),
-      sugar: Math.round(parseNumber(goalInputs.sugar, DEFAULT_GOALS.sugar)),
-      sodium: Math.round(parseNumber(goalInputs.sodium, DEFAULT_GOALS.sodium)),
-    };
+    });
     const profileToSave: UserProfile = { ...nextProfile, macroGoals: nextGoals };
 
     setSaving(true);
     try {
       if (isFirebaseConfigured && user.id !== 'dev_user') {
-        await saveUserProfile(profileToSave);
+        const savedNickname = await saveUserProfile(profileToSave);
+        profileToSave.nickname = savedNickname;
       }
       setProfile(profileToSave);
       setGoals(nextGoals);
-      setUser({ ...user, name: profileToSave.name, avatarUrl });
+      setUser({ ...user, name: profileToSave.name, nickname: profileToSave.nickname, avatarUrl });
       onClose();
-    } catch {
-      Alert.alert('Erro', 'Não foi possível salvar as configurações.');
+    } catch (error) {
+      if (error instanceof Error && error.message === 'nickname_taken') {
+        Alert.alert('Nickname indisponível', 'Esse nickname já está em uso. Escolha outro.');
+      } else {
+        Alert.alert('Erro', 'Não foi possível salvar as configurações.');
+      }
     } finally {
       setSaving(false);
     }
@@ -534,16 +611,83 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
                   </Text>
                 )}
               </TouchableOpacity>
-              <View style={modalStyles.photoInfo}>
-                <Text style={modalStyles.sectionTitle}>Foto de perfil</Text>
-                <Text style={modalStyles.sectionHint}>Toque no círculo para escolher uma imagem.</Text>
+              <View style={modalStyles.profileInfo}>
+                <TextInput
+                  style={modalStyles.profileNameInput}
+                  value={name}
+                  onChangeText={(v) => setName(maskNameInput(v))}
+                  placeholder="Seu nome"
+                  placeholderTextColor={Colors.gray400}
+                  autoCapitalize="words"
+                />
+                <View style={modalStyles.nicknameRow}>
+                  <Text style={modalStyles.nicknamePrefix}>@</Text>
+                  <TextInput
+                    style={modalStyles.nicknameInput}
+                    value={nickname}
+                    onChangeText={(v) => setNickname(normalizeNickname(v))}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    placeholder="nickname"
+                    placeholderTextColor={Colors.gray400}
+                    maxLength={20}
+                  />
+                </View>
+                {birthDateEditing || !birthDate ? (
+                  <View style={modalStyles.birthDateRow}>
+                    <TextInput
+                      style={modalStyles.birthDateInput}
+                      value={birthDate.includes('-') ? formatBirthDateInput(birthDate) : birthDate}
+                      onChangeText={(value) => setBirthDate(maskBirthDateInput(value))}
+                      placeholder="Data de nascimento"
+                      placeholderTextColor={Colors.gray400}
+                      keyboardType="numeric"
+                      maxLength={10}
+                      onBlur={() => {
+                        if (birthDate) setBirthDateEditing(false);
+                      }}
+                    />
+                    {Platform.OS !== 'web' ? (
+                      <TouchableOpacity style={modalStyles.datePickerBtn} onPress={() => setDatePickerOpen(true)}>
+                        <MaterialIcons name="calendar-today" size={18} color={Colors.green600} />
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    style={modalStyles.birthDateDisplay}
+                    onPress={() => {
+                      setBirthDateEditing(true);
+                      if (Platform.OS !== 'web') setDatePickerOpen(true);
+                    }}
+                  >
+                    <MaterialIcons name="cake" size={16} color={Colors.gray400} />
+                    <Text style={modalStyles.birthDateText}>{formatBirthDateInput(birthDate)}</Text>
+                    <MaterialIcons name="edit" size={15} color={Colors.green600} />
+                  </TouchableOpacity>
+                )}
+                {datePickerOpen && Platform.OS !== 'web' ? (
+                  <NativeDatePicker
+                    value={birthDateToDate(birthDate)}
+                    maximumDate={new Date()}
+                    onChange={(date, dismissed) => {
+                      setDatePickerOpen(false);
+                      setBirthDateEditing(false);
+                      if (!dismissed && date) setBirthDate(dateToBirthDateString(date));
+                    }}
+                  />
+                ) : null}
+              </View>
+              <View style={modalStyles.ageCard}>
+                <Text style={modalStyles.ageValue}>
+                  {calculateAgeFromBirthDate(birthDate) || '--'}
+                </Text>
+                <Text style={modalStyles.ageLabel}>anos</Text>
               </View>
             </View>
 
             <Text style={modalStyles.sectionTitle}>Dados do corpo</Text>
             <View style={modalStyles.fieldGrid}>
-              <Field label="Nome" value={name} onChangeText={(v) => setName(maskNameInput(v))} />
-              <Field label="Idade" value={age} onChangeText={(v) => setAge(maskAgeInput(v))} keyboardType="numeric" maxLength={3} placeholder="28" />
               <Field label="Peso (kg)" value={weight} onChangeText={(v) => setWeight(maskWeightInput(v))} keyboardType="decimal-pad" placeholder="85,5" />
               <Field label="Altura (m)" value={height} onChangeText={(v) => setHeight(maskHeightInput(v))} keyboardType="numeric" maxLength={4} placeholder="1,85" />
             </View>
@@ -606,21 +750,28 @@ function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => 
                 <Text style={modalStyles.sectionHint}>Edite manualmente ou recalcule pelos dados acima.</Text>
               </View>
               <View style={modalStyles.goalActionRow}>
-                <TouchableOpacity style={modalStyles.recalcBtn} onPress={handleRecalculateGoals}>
-                  <Text style={modalStyles.recalcText}>Recalcular</Text>
+                <TouchableOpacity
+                  style={modalStyles.recalcBtn}
+                  onPress={handleRecalculateGoals}
+                  accessibilityRole="button"
+                  accessibilityLabel="Recalcular metas nutricionais"
+                >
+                  <MaterialIcons name="refresh" size={20} color={Colors.green600} />
                 </TouchableOpacity>
               </View>
             </View>
 
             <View style={modalStyles.fieldGrid}>
-              <Field label="Calorias" value={goalInputs.kcal} onChangeText={(v) => updateGoalInput('kcal', v)} keyboardType="numeric" suffix="kcal" />
-              <Field label="Proteína" value={goalInputs.protein} onChangeText={(v) => updateGoalInput('protein', v)} keyboardType="numeric" suffix="g" />
-              <Field label="Carboidratos" value={goalInputs.carbs} onChangeText={(v) => updateGoalInput('carbs', v)} keyboardType="numeric" suffix="g" />
-              <Field label="Gorduras" value={goalInputs.fat} onChangeText={(v) => updateGoalInput('fat', v)} keyboardType="numeric" suffix="g" />
-              <Field label="Fibras" value={goalInputs.fiber} onChangeText={(v) => updateGoalInput('fiber', v)} keyboardType="numeric" suffix="g" />
-              <Field label="Água" value={goalInputs.water} onChangeText={(v) => updateGoalInput('water', v)} keyboardType="numeric" suffix="ml" />
-              <Field label="Açúcar máx." value={goalInputs.sugar} onChangeText={(v) => updateGoalInput('sugar', v)} keyboardType="numeric" suffix="g" />
-              <Field label="Sódio máx." value={goalInputs.sodium} onChangeText={(v) => updateGoalInput('sodium', v)} keyboardType="numeric" suffix="mg" />
+              {EDITABLE_GOAL_ROWS.map((item) => (
+                <Field
+                  key={item.key}
+                  label={item.label}
+                  value={goalInputs[item.key]}
+                  onChangeText={(value) => updateGoalInput(item.key, value)}
+                  keyboardType="numeric"
+                  suffix={item.unit}
+                />
+              ))}
             </View>
           </ScrollView>
 
@@ -661,83 +812,26 @@ function Field({
   );
 }
 
-function HelpModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
-  function openSource(url: string) {
-    Linking.openURL(url).catch(() => {
-      Alert.alert('Não foi possível abrir o link', 'Tente novamente em alguns instantes.');
-    });
-  }
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={modalStyles.bg}>
-        <TouchableOpacity style={modalStyles.backdrop} onPress={onClose} />
-        <View style={modalStyles.helpCard}>
-          <View style={modalStyles.header}>
-            <Text style={modalStyles.title}>Como calculamos suas metas</Text>
-            <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn}>
-              <MaterialIcons name="close" size={20} color={Colors.gray600} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={modalStyles.helpScroll}>
-            <Text style={modalStyles.helpIntro}>
-              As metas são uma estimativa inicial baseada nos seus dados de perfil. Elas servem como guia prático e podem ser ajustadas manualmente nas configurações.
-            </Text>
-
-            <View style={modalStyles.helpBlock}>
-              <Text style={modalStyles.helpBlockTitle}>Energia diária</Text>
-              <Text style={modalStyles.helpText}>
-                Usamos a fórmula Mifflin-St Jeor para estimar metabolismo basal e multiplicamos pelo nível de atividade. Para emagrecer, aplicamos um déficit moderado; para ganhar massa, um superávit controlado.
-              </Text>
-            </View>
-
-            <View style={modalStyles.helpBlock}>
-              <Text style={modalStyles.helpBlockTitle}>Macros e limites</Text>
-              <Text style={modalStyles.helpText}>
-                Proteína varia por peso, objetivo e atividade. Carboidratos, gorduras e fibras seguem faixas usadas em referências de ingestão diária. Açúcar e sódio aparecem como limites máximos.
-              </Text>
-            </View>
-
-            <View style={modalStyles.helpBlock}>
-              <Text style={modalStyles.helpBlockTitle}>Fontes usadas</Text>
-              <TouchableOpacity onPress={() => openSource('https://www.cdc.gov/healthy-weight-growth/losing-weight/index.html')}>
-                <Text style={modalStyles.sourceLink}>CDC - perda de peso gradual e sustentável</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => openSource('https://www.dietaryguidelines.gov/')}>
-                <Text style={modalStyles.sourceLink}>Dietary Guidelines for Americans - açúcar, sódio e padrão alimentar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => openSource('https://www.nationalacademies.org/cdn/materials/9fb9fae1-63a0-4048-88ad-3f972639149a')}>
-                <Text style={modalStyles.sourceLink}>National Academies/DRI - referência de macros, fibras e água</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => openSource('https://pubmed.ncbi.nlm.nih.gov/28642676/')}>
-                <Text style={modalStyles.sourceLink}>ISSN - proteína para pessoas fisicamente ativas</Text>
-              </TouchableOpacity>
-            </View>
-
-            <Text style={modalStyles.helpFootnote}>
-              Observação: se você tem condição médica, usa medicação, está grávida ou segue dieta terapêutica, confirme as metas com um profissional de saúde.
-            </Text>
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 function NotificationsModal({
   visible,
   onClose,
   nutritionistInvites,
+  chatLinks,
+  unreadChatCounts,
   onRespondInvite,
+  onOpenChat,
 }: {
   visible: boolean;
   onClose: () => void;
   nutritionistInvites: NutritionistPatientLink[];
+  chatLinks: NutritionistPatientLink[];
+  unreadChatCounts: Record<string, number>;
   onRespondInvite: (linkId: string, status: 'accepted' | 'rejected') => void;
+  onOpenChat: (link: NutritionistPatientLink) => void;
 }) {
   const notifications = useStore(selectNotifications);
-  const hasItems = notifications.length > 0 || nutritionistInvites.length > 0;
+  const unreadChatLinks = chatLinks.filter((link) => (unreadChatCounts[link.id] ?? 0) > 0);
+  const hasItems = notifications.length > 0 || nutritionistInvites.length > 0 || unreadChatLinks.length > 0;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -759,6 +853,22 @@ function NotificationsModal({
               </View>
             ) : (
               <>
+                {unreadChatLinks.map((link) => {
+                  const unread = unreadChatCounts[link.id] ?? 0;
+                  return (
+                    <TouchableOpacity
+                      key={`chat_${link.id}`}
+                      style={modalStyles.noticeCard}
+                      onPress={() => onOpenChat(link)}
+                    >
+                      <Text style={modalStyles.noticeTitle}>Mensagem nova</Text>
+                      <Text style={modalStyles.noticeText}>
+                        {link.nutritionistName} enviou {unread} mensagem(ns) no chat.
+                      </Text>
+                      <Text style={modalStyles.noticeMeta}>Toque para abrir a conversa.</Text>
+                    </TouchableOpacity>
+                  );
+                })}
                 {nutritionistInvites.map((invite) => (
                   <View key={invite.id} style={modalStyles.noticeCard}>
                     <Text style={modalStyles.noticeTitle}>Solicitação de nutricionista</Text>
@@ -777,7 +887,7 @@ function NotificationsModal({
                   </View>
                 ))}
                 {notifications.map((item) => (
-                  <View key={item.id} style={modalStyles.noticeCard}>
+                  <View key={item.id} style={[modalStyles.noticeCard, item.read && modalStyles.noticeCardRead]}>
                     <Text style={modalStyles.noticeTitle}>{item.userName || 'NutriMeta'}</Text>
                     <Text style={modalStyles.noticeText}>{item.message}</Text>
                   </View>
@@ -894,11 +1004,13 @@ export function HomeScreen() {
   const goals = useStore(selectGoals);
   const addEntry = useStore((s) => s.addEntry);
   const setNotifications = useStore((s) => s.setNotifications);
+  const markRead = useStore((s) => s.markRead);
   const unreadCount = useStore(selectUnreadCount);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [chatsOpen, setChatsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [nutritionistInvites, setNutritionistInvites] = useState<NutritionistPatientLink[]>([]);
@@ -910,7 +1022,8 @@ export function HomeScreen() {
   const [selectedFoodPlanOptions, setSelectedFoodPlanOptions] = useState<Record<string, string>>({});
   const [openFoodPlanOptionKey, setOpenFoodPlanOptionKey] = useState<string | null>(null);
   const [skippedFoodPlanMeals, setSkippedFoodPlanMeals] = useState<Record<string, boolean>>({});
-  const [shoppingPdfPlan, setShoppingPdfPlan] = useState<FoodPlan | null>(null);
+  const [manuallyCompletedFoodPlanMeals, setManuallyCompletedFoodPlanMeals] = useState<Record<string, boolean>>({});
+  const [shoppingPdfOpen, setShoppingPdfOpen] = useState(false);
 
   const totals: FoodNutrition = useMemo(
     () => todayLog?.totalNutrition ?? { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
@@ -940,6 +1053,19 @@ export function HomeScreen() {
     { key: 'folate', label: 'Folato', unit: 'mcg', goal: 400, mode: 'target', section: 'Vitaminas e minerais' },
   ], [safeGoals]);
   const waterMl = todayLog?.waterMl ?? 0;
+  const completedFoodPlanMeals = useMemo(() => {
+    const completed: Record<string, boolean> = { ...manuallyCompletedFoodPlanMeals };
+    todayLog?.entries.forEach((entry) => {
+      if (entry.source !== 'saved' || !entry.savedMealId) return;
+      if (entry.mealGroupId?.startsWith(`${entry.savedMealId}_`)) {
+        completed[entry.mealGroupId] = true;
+      }
+      if (entry.mealGroupLabel) {
+        completed[`${entry.savedMealId}_${entry.mealPeriod}_${entry.mealGroupLabel}`] = true;
+      }
+    });
+    return completed;
+  }, [manuallyCompletedFoodPlanMeals, todayLog?.entries]);
 
   useEffect(() => {
     if (!user || user.id === 'dev_user' || !isFirebaseConfigured) {
@@ -1009,6 +1135,22 @@ export function HomeScreen() {
     month: 'long',
   });
 
+  function openNotifications() {
+    setHeaderMenuOpen(false);
+    setNotificationsOpen(true);
+    const unreadIds = useStore.getState().notifications
+      .filter((item) => !item.read)
+      .map((item) => item.id);
+    if (unreadIds.length === 0) return;
+
+    markRead(unreadIds);
+    if (isFirebaseConfigured && user?.id !== 'dev_user') {
+      markNotificationsRead(unreadIds).catch((error) => {
+        console.warn('Failed to mark notifications as read', error);
+      });
+    }
+  }
+
   async function confirmLogout() {
     setLogoutLoading(true);
     try {
@@ -1020,6 +1162,30 @@ export function HomeScreen() {
       setLogoutConfirmOpen(false);
       clearAuth();
     }
+  }
+
+  function openProfileSettings() {
+    setHeaderMenuOpen(false);
+    setSettingsOpen(true);
+  }
+
+  function openChats() {
+    setHeaderMenuOpen(false);
+    setChatsOpen(true);
+  }
+
+  function openHelp() {
+    setHeaderMenuOpen(false);
+    setHelpOpen(true);
+  }
+
+  function openShoppingList() {
+    setHeaderMenuOpen(false);
+    if (!latestFoodPlan) {
+      Alert.alert('Sem plano alimentar', 'Você ainda não tem um plano alimentar para gerar a lista de compras.');
+      return;
+    }
+    setShoppingPdfOpen(true);
   }
 
   function createLocalFoodPlanEntry(userId: string, payload: Omit<MealEntry, 'id' | 'userId' | 'addedAt'>): MealEntry {
@@ -1047,7 +1213,7 @@ export function HomeScreen() {
     }));
   }
 
-  async function handleCompleteFoodPlanMeal(plan: FoodPlan, meal: FoodPlanMeal) {
+  async function handleCompleteFoodPlanMeal(plan: FoodPlan, meal: FoodPlanMeal, mealIndex: number) {
     if (!user) return;
     const items = meal.items.filter((item) => item.nutrition);
     if (items.length === 0) {
@@ -1055,9 +1221,10 @@ export function HomeScreen() {
       return;
     }
 
-    const key = `${plan.id}_${meal.period}_${meal.title}`;
-    const mealGroupId = `plan_${plan.id}_${generateId()}`;
+    const key = makeFoodPlanMealKey(plan.id, meal, mealIndex);
+    const mealGroupId = key;
     setCompletingMealKey(key);
+    setManuallyCompletedFoodPlanMeals((items) => ({ ...items, [key]: true }));
     try {
       for (const item of items) {
         const payload: Omit<MealEntry, 'id' | 'userId' | 'addedAt'> = {
@@ -1080,6 +1247,11 @@ export function HomeScreen() {
       Alert.alert('Refeição registrada', 'A refeição recomendada foi adicionada ao seu dia.');
     } catch (error) {
       console.warn('Failed to complete food plan meal', error);
+      setManuallyCompletedFoodPlanMeals((items) => {
+        const next = { ...items };
+        delete next[key];
+        return next;
+      });
       Alert.alert('Erro', 'Não foi possível registrar essa refeição agora.');
     } finally {
       setCompletingMealKey(null);
@@ -1091,36 +1263,57 @@ export function HomeScreen() {
       <View style={styles.header}>
         <View>
           <Text style={styles.greeting}>{greeting}</Text>
-          <View style={styles.nameRow}>
-            <Text style={styles.userName}>{firstName}</Text>
-            <TouchableOpacity style={styles.logoutBtn} onPress={() => setLogoutConfirmOpen(true)}>
-              <Text style={styles.logoutText}>Sair</Text>
-            </TouchableOpacity>
-          </View>
+          <Text style={styles.userName}>{firstName}</Text>
           <Text style={styles.dateLabel}>{today}</Text>
         </View>
         <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.helpButton} onPress={() => setChatsOpen(true)}>
-            <MaterialIcons name="chat-bubble-outline" size={21} color={Colors.green600} />
+          <TouchableOpacity style={styles.helpButton} onPress={openNotifications}>
+            <MaterialIcons name="notifications-none" size={21} color={Colors.green600} />
+            {unreadCount + nutritionistInvites.length + unreadChatTotal > 0 && <View style={styles.notificationDot} />}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.menuButton}
+            onPress={() => setHeaderMenuOpen((open) => !open)}
+            accessibilityRole="button"
+            accessibilityLabel="Abrir menu"
+            accessibilityState={{ expanded: headerMenuOpen }}
+          >
+            <MaterialIcons name={headerMenuOpen ? 'close' : 'menu'} size={25} color={Colors.green600} />
             {unreadChatTotal > 0 && <View style={styles.notificationDot} />}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.helpButton} onPress={() => setNotificationsOpen(true)}>
-            <MaterialIcons name="notifications-none" size={21} color={Colors.green600} />
-            {unreadCount + nutritionistInvites.length > 0 && <View style={styles.notificationDot} />}
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.helpButton} onPress={() => setHelpOpen(true)}>
-            <MaterialIcons name="help-outline" size={21} color={Colors.green600} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.settingsButton} onPress={() => setSettingsOpen(true)}>
-            {user?.avatarUrl ? (
-              <Image source={{ uri: user.avatarUrl }} style={styles.avatarImage} />
-            ) : (
-              <Text style={styles.avatarText}>{initials}</Text>
-            )}
-          <View style={styles.gearBadge}>
-            <MaterialIcons name="settings" size={12} color={Colors.white} />
-          </View>
-          </TouchableOpacity>
+          {headerMenuOpen ? (
+            <View style={styles.headerMenu}>
+              <TouchableOpacity style={styles.headerMenuItem} onPress={openProfileSettings}>
+                <MaterialIcons name="person-outline" size={20} color={Colors.green600} />
+                <Text style={styles.headerMenuText}>Editar perfil</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.headerMenuItem} onPress={openChats}>
+                <MaterialIcons name="chat-bubble-outline" size={20} color={Colors.green600} />
+                <Text style={styles.headerMenuText}>Chat</Text>
+                {unreadChatTotal > 0 ? (
+                  <Text style={styles.headerMenuBadge}>{unreadChatTotal}</Text>
+                ) : null}
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.headerMenuItem} onPress={openShoppingList}>
+                <MaterialIcons name="picture-as-pdf" size={20} color={Colors.green600} />
+                <Text style={styles.headerMenuText}>Lista de compras</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.headerMenuItem} onPress={openHelp}>
+                <MaterialIcons name="help-outline" size={20} color={Colors.green600} />
+                <Text style={styles.headerMenuText}>Ajuda</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.headerMenuItem}
+                onPress={() => {
+                  setHeaderMenuOpen(false);
+                  setLogoutConfirmOpen(true);
+                }}
+              >
+                <MaterialIcons name="logout" size={20} color={Colors.danger} />
+                <Text style={[styles.headerMenuText, styles.headerMenuTextDanger]}>Sair</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
         </View>
       </View>
 
@@ -1158,10 +1351,11 @@ export function HomeScreen() {
             plan={latestFoodPlan}
             completingMealKey={completingMealKey}
             onCompleteMeal={handleCompleteFoodPlanMeal}
-            onOpenShoppingPdf={setShoppingPdfPlan}
+            onOpenShoppingPdf={() => setShoppingPdfOpen(true)}
             selectedOptions={selectedFoodPlanOptions}
             openOptionKey={openFoodPlanOptionKey}
             skippedMealKeys={skippedFoodPlanMeals}
+            completedMealKeys={completedFoodPlanMeals}
             onSelectOption={handleSelectFoodPlanOption}
             onToggleOptions={handleToggleFoodPlanOptions}
             onSkipMeal={handleSkipFoodPlanMeal}
@@ -1173,11 +1367,12 @@ export function HomeScreen() {
       </ScrollView>
 
       <SettingsModal visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <HelpModal visible={helpOpen} onClose={() => setHelpOpen(false)} />
+      <NutritionDataHelpModal visible={helpOpen} onClose={() => setHelpOpen(false)} />
       <ShoppingPdfModal
-        visible={Boolean(shoppingPdfPlan)}
-        plan={shoppingPdfPlan}
-        onClose={() => setShoppingPdfPlan(null)}
+        visible={shoppingPdfOpen}
+        plan={latestFoodPlan}
+        plans={foodPlans}
+        onClose={() => setShoppingPdfOpen(false)}
       />
       <ConfirmDialog
         visible={logoutConfirmOpen}
@@ -1203,7 +1398,13 @@ export function HomeScreen() {
         visible={notificationsOpen}
         onClose={() => setNotificationsOpen(false)}
         nutritionistInvites={nutritionistInvites}
+        chatLinks={chatLinks}
+        unreadChatCounts={unreadChatCounts}
         onRespondInvite={handleRespondNutritionistInvite}
+        onOpenChat={(link) => {
+          setNotificationsOpen(false);
+          setChatLink(link);
+        }}
       />
       <NutritionistChatModal
         visible={Boolean(chatLink)}
@@ -1219,6 +1420,8 @@ export function HomeScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   header: {
+    zIndex: 50,
+    elevation: 8,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -1230,18 +1433,8 @@ const styles = StyleSheet.create({
   },
   greeting: { fontSize: Typography.sm, color: Colors.gray400 },
   userName: { fontSize: Typography.xl, fontWeight: Typography.bold },
-  nameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  logoutBtn: {
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 4,
-    borderRadius: Radius.full,
-    backgroundColor: Colors.gray50,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  logoutText: { fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.bold },
   dateLabel: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  headerActions: { position: 'relative', flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   helpButton: {
     width: 36,
     height: 36,
@@ -1260,6 +1453,55 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     backgroundColor: Colors.danger,
+  },
+  menuButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: Colors.green50,
+    borderWidth: 1,
+    borderColor: Colors.green100,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerMenu: {
+    position: 'absolute',
+    top: 50,
+    right: 0,
+    width: 190,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.white,
+    paddingVertical: 6,
+    zIndex: 100,
+    ...Shadows.md,
+  },
+  headerMenuItem: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  headerMenuText: {
+    flex: 1,
+    fontSize: Typography.sm,
+    color: Colors.gray800,
+    fontWeight: Typography.semibold,
+  },
+  headerMenuTextDanger: { color: Colors.danger },
+  headerMenuBadge: {
+    minWidth: 22,
+    overflow: 'hidden',
+    borderRadius: Radius.full,
+    backgroundColor: Colors.danger,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    color: Colors.white,
+    fontSize: Typography.xs,
+    fontWeight: Typography.bold,
+    textAlign: 'center',
   },
   settingsButton: {
     width: 48,
@@ -1313,6 +1555,8 @@ const styles = StyleSheet.create({
   foodPlanTitle: { marginTop: 2, fontSize: Typography.lg, color: Colors.gray800, fontWeight: Typography.bold },
   foodPlanAuthor: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.bold },
   foodPlanNotes: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 19, marginBottom: Spacing.sm },
+  foodPlanCompleteBox: { minHeight: 58, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.green100, backgroundColor: Colors.green50, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.sm },
+  foodPlanCompleteText: { flex: 1, fontSize: Typography.sm, color: Colors.green600, fontWeight: Typography.bold, lineHeight: 18 },
   foodPlanMeal: { backgroundColor: Colors.gray50, borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.xs },
   foodPlanMealSkipped: { opacity: 0.72 },
   foodPlanMealHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: Spacing.sm },
@@ -1335,6 +1579,7 @@ const styles = StyleSheet.create({
   foodPlanSkipText: { color: Colors.gray600, fontSize: Typography.sm, fontWeight: Typography.bold },
   foodPlanSkipTextActive: { color: Colors.white },
   foodPlanDoneBtn: { flex: 1, minHeight: 38, borderRadius: Radius.md, backgroundColor: Colors.green400, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs },
+  foodPlanDoneBtnCompleted: { backgroundColor: Colors.green600 },
   foodPlanDoneBtnDisabled: { opacity: 0.65 },
   foodPlanDoneText: { color: Colors.white, fontSize: Typography.sm, fontWeight: Typography.bold },
   shoppingTitle: { marginTop: Spacing.sm, marginBottom: Spacing.xs, fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.bold },
@@ -1406,11 +1651,23 @@ const modalStyles = StyleSheet.create({
   closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.gray50 },
   closeText: { fontSize: Typography.xl, color: Colors.gray600, lineHeight: 24 },
   scroll: { paddingBottom: Spacing.base },
-  photoRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginBottom: Spacing.lg },
+  photoRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.lg },
   photoButton: { width: 72, height: 72, borderRadius: 36, backgroundColor: Colors.green50, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: Colors.green100 },
   photo: { width: 72, height: 72, borderRadius: 36 },
   photoInitials: { fontSize: Typography.xl, fontWeight: Typography.bold, color: Colors.green600 },
-  photoInfo: { flex: 1 },
+  profileInfo: { flex: 1, minWidth: 0, gap: 0, justifyContent: 'center' },
+  profileNameInput: { minHeight: 23, padding: 0, fontSize: Typography.lg, fontWeight: Typography.bold, color: Colors.gray800 },
+  nicknameRow: { flexDirection: 'row', alignItems: 'center' },
+  nicknamePrefix: { fontSize: Typography.sm, color: Colors.green600, fontWeight: Typography.bold, marginRight: 1 },
+  nicknameInput: { flex: 1, minHeight: 19, padding: 0, fontSize: Typography.sm, color: Colors.green600, fontWeight: Typography.semibold },
+  birthDateDisplay: { minHeight: 23, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4 },
+  birthDateText: { fontSize: Typography.sm, color: Colors.gray600, fontWeight: Typography.semibold },
+  birthDateRow: { minHeight: 32, flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  birthDateInput: { flex: 1, minHeight: 32, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.white, paddingHorizontal: Spacing.sm, fontSize: Typography.sm, color: Colors.gray800 },
+  datePickerBtn: { width: 36, height: 36, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green100 },
+  ageCard: { width: 62, minHeight: 62, borderRadius: Radius.md, backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green100, alignItems: 'center', justifyContent: 'center' },
+  ageValue: { fontSize: Typography.xl, color: Colors.green600, fontWeight: Typography.bold },
+  ageLabel: { fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.semibold },
   sectionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, marginBottom: 3 },
   sectionHint: { fontSize: Typography.xs, color: Colors.gray400, lineHeight: 16 },
   fieldGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.lg },
@@ -1431,8 +1688,7 @@ const modalStyles = StyleSheet.create({
   pillTextActive: { color: Colors.green600 },
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.sm },
   goalActionRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: Spacing.xs, flex: 1 },
-  recalcBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green400 },
-  recalcText: { color: Colors.green600, fontWeight: Typography.bold, fontSize: Typography.sm },
+  recalcBtn: { width: 40, height: 40, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green400 },
   actions: { flexDirection: 'row', gap: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
   cancelBtn: { flex: 1, alignItems: 'center', paddingVertical: Spacing.md, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
   cancelText: { color: Colors.gray600, fontWeight: Typography.semibold },
@@ -1475,6 +1731,7 @@ const modalStyles = StyleSheet.create({
   emptyNotice: { alignItems: 'center', justifyContent: 'center', padding: Spacing.xl },
   emptyNoticeText: { marginTop: Spacing.sm, fontSize: Typography.sm, color: Colors.gray400, textAlign: 'center' },
   noticeCard: { backgroundColor: Colors.gray50, borderRadius: Radius.md, padding: Spacing.md, marginBottom: Spacing.sm },
+  noticeCardRead: { opacity: 0.68 },
   noticeTitle: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray800, marginBottom: 4 },
   noticeText: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 19 },
   noticeMeta: { marginTop: 4, fontSize: Typography.xs, color: Colors.gray400 },

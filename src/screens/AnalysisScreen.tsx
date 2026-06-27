@@ -6,7 +6,9 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
+  ViewStyle,
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -287,9 +289,19 @@ function getNutritionGoalStatus(current: number, goal: number, mode: NutritionGo
   return { pct, label: 'Em progresso', color: Colors.info, bg: Colors.carbsL };
 }
 
-function StatCard({ label, value, hint }: { label: string; value: string; hint: string }) {
+function StatCard({
+  label,
+  value,
+  hint,
+  style,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  style?: ViewStyle;
+}) {
   return (
-    <View style={styles.statCard}>
+    <View style={[styles.statCard, style]}>
       <Text style={styles.statLabel}>{label}</Text>
       <Text style={styles.statValue}>{value}</Text>
       <Text style={styles.statHint}>{hint}</Text>
@@ -358,11 +370,24 @@ export function AnalysisScreen() {
   const user = useStore((s) => s.user);
   const todayLog = useStore((s) => s.todayLog);
   const goals = useStore(selectGoals);
+  const { width } = useWindowDimensions();
   const [logs, setLogs] = useState<DailyLog[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
 
   const safeGoals = { ...DEFAULT_GOALS, ...(goals ?? {}) };
+  const compact = width < 720;
+  const veryCompact = width < 420;
+  const statCardStyle: ViewStyle = {
+    width: compact ? (veryCompact ? '100%' : '48%') : '23.8%',
+  };
+  const adherenceItemStyle: ViewStyle = {
+    width: compact ? (veryCompact ? '48%' : '31%') : '15.5%',
+  };
+  const alertChipStyle: ViewStyle = {
+    width: compact ? (veryCompact ? '100%' : '48%') : undefined,
+    flex: compact ? undefined : 1,
+  };
 
   async function loadLogs() {
     if (!user) return;
@@ -453,8 +478,8 @@ export function AnalysisScreen() {
           </View>
         ) : (
           <>
-            <View style={styles.section}>
-              <View style={styles.weekAnalysisHeader}>
+            <View style={[styles.section, compact && styles.sectionCompact]}>
+              <View style={[styles.weekAnalysisHeader, veryCompact && styles.weekAnalysisHeaderCompact]}>
                 <View>
                   <Text style={styles.sectionTitle}>Análise semanal</Text>
                   <Text style={styles.weekAnalysisSub}>{selectedWeek.rangeLabel}</Text>
@@ -472,7 +497,7 @@ export function AnalysisScreen() {
                     return (
                       <TouchableOpacity
                         key={week.index}
-                        style={[styles.weekChip, active && styles.weekChipActive]}
+                        style={[styles.weekChip, compact && styles.weekChipCompact, active && styles.weekChipActive]}
                         onPress={() => setSelectedWeekIndex(week.index)}
                       >
                         <Text style={[styles.weekChipText, active && styles.weekChipTextActive]}>{week.label}</Text>
@@ -484,10 +509,10 @@ export function AnalysisScreen() {
               </ScrollView>
 
               <View style={styles.weekSummaryGrid}>
-                <StatCard label="Total da semana" value={`${Math.round(selectedWeekTotal.kcal)} kcal`} hint={`${selectedWeekLogs.length} dia(s) com registro`} />
-                <StatCard label="Média diária" value={`${selectedWeekAverage.kcal} kcal`} hint="na semana selecionada" />
-                <StatCard label="Água total" value={`${Math.round(selectedWeekWaterTotal)} ml`} hint={`${selectedWeekWaterAverage} ml/dia`} />
-                <StatCard label="Vs semana anterior" value={previousWeek ? formatDelta(selectedWeekAverage.kcal - previousWeekAverage.kcal, ' kcal') : 'sem dados'} hint={previousWeek ? `água ${formatDelta(selectedWeekWaterAverage - previousWeekWaterAverage, ' ml')}` : 'compare outra semana'} />
+                <StatCard style={statCardStyle} label="Total da semana" value={`${Math.round(selectedWeekTotal.kcal)} kcal`} hint={`${selectedWeekLogs.length} dia(s) com registro`} />
+                <StatCard style={statCardStyle} label="Média diária" value={`${selectedWeekAverage.kcal} kcal`} hint="na semana selecionada" />
+                <StatCard style={statCardStyle} label="Água total" value={`${Math.round(selectedWeekWaterTotal)} ml`} hint={`${selectedWeekWaterAverage} ml/dia`} />
+                <StatCard style={statCardStyle} label="Vs semana anterior" value={previousWeek ? formatDelta(selectedWeekAverage.kcal - previousWeekAverage.kcal, ' kcal') : 'sem dados'} hint={previousWeek ? `água ${formatDelta(selectedWeekWaterAverage - previousWeekWaterAverage, ' ml')}` : 'compare outra semana'} />
               </View>
 
               <Text style={styles.weekBlockTitle}>Aderência às metas</Text>
@@ -500,7 +525,7 @@ export function AnalysisScreen() {
                   { label: 'Sódio', value: goalPct(selectedWeekAverage.sodium ?? 0, safeGoals.sodium), tone: (selectedWeekAverage.sodium ?? 0) > safeGoals.sodium ? 'warn' : 'good' },
                   { label: 'Açúcar', value: goalPct(selectedWeekAverage.sugar ?? 0, safeGoals.sugar), tone: (selectedWeekAverage.sugar ?? 0) > safeGoals.sugar ? 'warn' : 'good' },
                 ].map((item) => (
-                  <View key={item.label} style={styles.adherenceItem}>
+                  <View key={item.label} style={[styles.adherenceItem, adherenceItemStyle]}>
                     <Text style={styles.adherenceLabel}>{item.label}</Text>
                     <Text style={[styles.adherenceValue, item.tone === 'warn' && styles.adherenceWarn, item.tone === 'good' && styles.adherenceGood]}>{item.value}%</Text>
                   </View>
@@ -510,14 +535,14 @@ export function AnalysisScreen() {
               <Text style={styles.weekBlockTitle}>Alertas objetivos</Text>
               <View style={styles.alertGrid}>
                 {selectedWeekAlerts.map((alert) => (
-                  <View key={alert.label} style={[styles.alertChip, alert.tone === 'warn' ? styles.alertChipWarn : styles.alertChipGood]}>
+                  <View key={alert.label} style={[styles.alertChip, alertChipStyle, alert.tone === 'warn' ? styles.alertChipWarn : styles.alertChipGood]}>
                     <Text style={[styles.alertValue, alert.tone === 'warn' ? styles.alertValueWarn : styles.alertValueGood]}>{alert.value}</Text>
                     <Text style={styles.alertLabel}>{alert.label}</Text>
                   </View>
                 ))}
               </View>
 
-              <View style={styles.weekColumns}>
+              <View style={[styles.weekColumns, compact && styles.weekColumnsCompact]}>
                 <View style={styles.weekColumn}>
                   <Text style={styles.weekBlockTitle}>Distribuição por refeição</Text>
                   {selectedWeekMealDistribution.length === 0 ? (
@@ -585,7 +610,6 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: Typography.sm, color: Colors.gray400, lineHeight: 20 },
   statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.sm },
   statCard: {
-    width: Platform.OS === 'web' ? '24%' : '48%',
     backgroundColor: Colors.white,
     borderRadius: Radius.lg,
     borderWidth: 1,
@@ -594,18 +618,21 @@ const styles = StyleSheet.create({
     ...Shadows.sm,
   },
   statLabel: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.semibold },
-  statValue: { fontSize: Typography.xl, fontWeight: Typography.bold, marginTop: 4 },
+  statValue: { fontSize: Typography.lg, fontWeight: Typography.bold, marginTop: 4 },
   statHint: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 3 },
   section: { backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, marginBottom: Spacing.sm },
-  sectionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, marginBottom: Spacing.md },
+  sectionCompact: { padding: Spacing.sm },
+  sectionTitle: { fontSize: Typography.base, fontWeight: Typography.bold, marginBottom: 4 },
   weekAnalysisHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: Spacing.sm, marginBottom: Spacing.sm },
-  weekAnalysisSub: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -Spacing.sm },
+  weekAnalysisHeaderCompact: { flexDirection: 'column' },
+  weekAnalysisSub: { fontSize: Typography.xs, color: Colors.gray400 },
   weekRegisteredPill: { minWidth: 68, alignItems: 'center', borderRadius: Radius.md, backgroundColor: Colors.green50, paddingHorizontal: Spacing.sm, paddingVertical: 7 },
   weekRegisteredValue: { fontSize: Typography.md, fontWeight: Typography.bold, color: Colors.green600 },
   weekRegisteredLabel: { fontSize: Typography.xs, color: Colors.gray400, marginTop: -2 },
   weekSelectorScroll: { marginBottom: Spacing.sm },
   weekSelector: { flexDirection: 'row', gap: Spacing.sm, paddingRight: Spacing.sm },
   weekChip: { minWidth: 132, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, paddingHorizontal: Spacing.sm, paddingVertical: 8, backgroundColor: Colors.white },
+  weekChipCompact: { minWidth: 118, paddingHorizontal: 10 },
   weekChipActive: { borderColor: Colors.green400, backgroundColor: Colors.green50 },
   weekChipText: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.gray600 },
   weekChipTextActive: { color: Colors.green600 },
@@ -614,13 +641,13 @@ const styles = StyleSheet.create({
   weekSummaryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.sm },
   weekBlockTitle: { fontSize: Typography.xs, color: Colors.gray600, fontWeight: Typography.bold, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: Spacing.sm, marginBottom: Spacing.sm },
   adherenceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
-  adherenceItem: { width: Platform.OS === 'web' ? '15.5%' : '31%', minHeight: 70, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, backgroundColor: Colors.gray50, padding: Spacing.sm, justifyContent: 'center' },
+  adherenceItem: { minHeight: 68, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.md, backgroundColor: Colors.gray50, padding: Spacing.sm, justifyContent: 'center' },
   adherenceLabel: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.semibold },
   adherenceValue: { fontSize: Typography.lg, color: Colors.gray800, fontWeight: Typography.bold, marginTop: 4 },
   adherenceWarn: { color: Colors.warning },
   adherenceGood: { color: Colors.green600 },
   alertGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
-  alertChip: { minWidth: Platform.OS === 'web' ? 126 : '47%', flex: Platform.OS === 'web' ? 1 : undefined, borderRadius: Radius.md, borderWidth: 1, padding: Spacing.sm },
+  alertChip: { minWidth: 0, borderRadius: Radius.md, borderWidth: 1, padding: Spacing.sm },
   alertChipGood: { backgroundColor: Colors.green50, borderColor: Colors.green400 },
   alertChipWarn: { backgroundColor: Colors.fatL, borderColor: '#F6C36A' },
   alertValue: { fontSize: Typography.md, fontWeight: Typography.bold },
@@ -628,6 +655,7 @@ const styles = StyleSheet.create({
   alertValueWarn: { color: Colors.warning },
   alertLabel: { fontSize: Typography.xs, color: Colors.gray600, marginTop: 2, fontWeight: Typography.semibold },
   weekColumns: { flexDirection: Platform.OS === 'web' ? 'row' : 'column', gap: Spacing.md, marginTop: Spacing.sm },
+  weekColumnsCompact: { flexDirection: 'column', gap: Spacing.sm },
   weekColumn: { flex: 1 },
   distributionRow: { borderTopWidth: 1, borderTopColor: Colors.border, paddingVertical: Spacing.sm },
   distributionTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },

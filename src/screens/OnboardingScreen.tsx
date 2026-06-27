@@ -6,16 +6,21 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, Radius, Shadows } from '../constants/theme';
+import { NativeDatePicker } from '../components/NativeDatePicker';
 import { UserProfile, BiologicalSex, GoalType, ActivityLevel } from '../types';
 import { useStore } from '../store';
 import { calcMacroGoals, formatGrams } from '../utils/nutrition';
 import {
   buildValidatedProfileValues,
-  maskAgeInput,
+  birthDateToDate,
+  calculateAgeFromBirthDate,
+  dateToBirthDateString,
+  formatBirthDateInput,
+  maskBirthDateInput,
   maskHeightInput,
   maskNameInput,
   maskWeightInput,
-  parseAge,
+  normalizeBirthDateInput,
   parseHeightCm,
   parseWeightKg,
   validateProfileBasics,
@@ -51,13 +56,14 @@ export function OnboardingScreen({ onComplete }: Props) {
 
   const [stepIdx, setStepIdx]     = useState(0);
   const [name,    setName]        = useState(user?.name ?? '');
-  const [age,     setAge]         = useState('');
+  const [birthDate, setBirthDate] = useState('');
   const [weight,  setWeight]      = useState('');
   const [height,  setHeight]      = useState('');
   const [sex,     setSex]         = useState<BiologicalSex>('M');
   const [goal,    setGoal]        = useState<GoalType>('maintain');
   const [activity,setActivity]    = useState<ActivityLevel>(1.55);
   const [saving,  setSaving]      = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
 
   useEffect(() => {
     if (!name.trim() && user?.name) {
@@ -70,7 +76,7 @@ export function OnboardingScreen({ onComplete }: Props) {
 
   function goNext() {
     if (step === 'basics') {
-      const error = validateProfileBasics({ name, age, weight, height });
+      const error = validateProfileBasics({ name, birthDate: normalizeBirthDateInput(birthDate), weight, height });
       if (error) {
         Alert.alert('Confira seus dados', error);
         return;
@@ -86,11 +92,12 @@ export function OnboardingScreen({ onComplete }: Props) {
   async function handleFinish() {
     if (!user) return;
     setSaving(true);
-    const profileValues = buildValidatedProfileValues({ age, weight, height });
+    const profileValues = buildValidatedProfileValues({ birthDate: normalizeBirthDateInput(birthDate), weight, height });
 
     const profile: UserProfile = {
       userId:           user.id,
       name:             name.trim(),
+      birthDate:        profileValues.birthDate,
       age:              profileValues.age,
       weight:           profileValues.weight,
       height:           profileValues.height,
@@ -114,7 +121,8 @@ export function OnboardingScreen({ onComplete }: Props) {
 
     try {
       if (isFirebaseConfigured && user.id !== 'dev_user') {
-        await saveUserProfile(profile);
+        const nickname = await saveUserProfile(profile);
+        profile.nickname = nickname;
       }
       setProfile(profile);
       setGoals(goals);
@@ -127,8 +135,10 @@ export function OnboardingScreen({ onComplete }: Props) {
   }
 
   // computed preview goals (for result step)
+  const previewBirthDate = normalizeBirthDateInput(birthDate);
+  const previewAge = calculateAgeFromBirthDate(previewBirthDate) || 25;
   const previewProfile: UserProfile = {
-    userId: '', name, age: parseAge(age), weight: parseWeightKg(weight),
+    userId: '', name, birthDate: previewBirthDate, age: previewAge, weight: parseWeightKg(weight),
     height: parseHeightCm(height), sex, goal, activityLevel: activity,
     onboardingComplete: false, groupIds: [], communityPrivacy: {
       showProtein: true,
@@ -157,7 +167,33 @@ export function OnboardingScreen({ onComplete }: Props) {
             <Text style={styles.title}>Vamos te conhecer 👋</Text>
             <Text style={styles.sub}>Para calcular suas metas de macronutrientes personalizadas</Text>
             <Field label="Seu nome" value={name} onChangeText={(v) => setName(maskNameInput(v))} placeholder="Ex: João Silva" autoCapitalize="words" />
-            <Field label="Idade" value={age} onChangeText={(v) => setAge(maskAgeInput(v))} placeholder="Ex: 28" keyboardType="numeric" maxLength={3} />
+            <Text style={styles.fieldLabel}>Data de nascimento</Text>
+            <View style={styles.dateInputRow}>
+              <TextInput
+                style={styles.dateInput}
+                value={birthDate.includes('-') ? formatBirthDateInput(birthDate) : birthDate}
+                onChangeText={(v) => setBirthDate(maskBirthDateInput(v))}
+                placeholder="Ex: 22/06/1995"
+                placeholderTextColor={Colors.gray400}
+                keyboardType="numeric"
+                maxLength={10}
+              />
+              {Platform.OS !== 'web' ? (
+                <TouchableOpacity style={styles.dateButton} onPress={() => setDatePickerOpen(true)}>
+                  <MaterialIcons name="calendar-today" size={20} color={Colors.green600} />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+            {datePickerOpen && Platform.OS !== 'web' ? (
+              <NativeDatePicker
+                value={birthDateToDate(birthDate)}
+                maximumDate={new Date()}
+                onChange={(date, dismissed) => {
+                  setDatePickerOpen(false);
+                  if (!dismissed && date) setBirthDate(dateToBirthDateString(date));
+                }}
+              />
+            ) : null}
             <Field label="Peso atual (kg)" value={weight} onChangeText={(v) => setWeight(maskWeightInput(v))} placeholder="Ex: 85,5" keyboardType="decimal-pad" />
             <Field label="Altura (m)" value={height} onChangeText={(v) => setHeight(maskHeightInput(v))} placeholder="Ex: 1,85" keyboardType="numeric" maxLength={4} />
           </>
@@ -311,6 +347,18 @@ const styles = StyleSheet.create({
     padding: Spacing.md, fontSize: Typography.base, color: Colors.gray800, marginBottom: Spacing.md,
     backgroundColor: Colors.white,
   },
+  dateInputRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.md },
+  dateInput: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    padding: Spacing.md,
+    fontSize: Typography.base,
+    color: Colors.gray800,
+    backgroundColor: Colors.white,
+  },
+  dateButton: { width: 52, alignSelf: 'stretch', borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green100 },
 
   optGrid:         { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   optCard:         { width: '47%', backgroundColor: Colors.white, borderWidth: 1.5, borderColor: Colors.border, borderRadius: Radius.lg, padding: Spacing.md, alignItems: 'center', ...Shadows.sm },

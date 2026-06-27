@@ -3287,6 +3287,7 @@ export function AddMealScreen({
       .map((item) => item.food?.name ?? item.foodText)
       .filter(Boolean);
     const authorName = profile?.name ?? user.name ?? "Usuário";
+    const authorNickname = profile?.nickname ?? user.nickname;
 
     if (!isFirebaseConfigured || user.id === "dev_user") {
       Alert.alert(
@@ -3300,6 +3301,7 @@ export function AddMealScreen({
       await addCommunityPost({
         authorId: user.id,
         authorName,
+        authorNickname,
         imageUri: photo.imageUri,
         imageMimeType: photo.mimeType,
         caption: photo.caption,

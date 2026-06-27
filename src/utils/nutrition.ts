@@ -3,7 +3,6 @@ import {
   MacroGoals,
   FoodNutrition,
   GoalType,
-  ActivityLevel,
 } from '../types';
 
 export const BRASILIA_TIME_ZONE = 'America/Sao_Paulo';
@@ -31,7 +30,7 @@ function getCalorieFloor(profile: UserProfile): number {
 
 function calcKcalTarget(tdee: number, profile: UserProfile): number {
   if (profile.goal === 'deficit') {
-    const deficit = clamp(tdee * 0.2, 300, 750);
+    const deficit = clamp(tdee * 0.2, 300, 500);
     return Math.max(tdee - deficit, getCalorieFloor(profile));
   }
 
@@ -47,6 +46,27 @@ function calcKcalTarget(tdee: number, profile: UserProfile): number {
 }
 
 // ─── Macro split recommendations ─────────────────────────────────────────────
+// Targets stay inside DRI/AMDR ranges. Goal and activity only move the target
+// within those public-health ranges; they do not create clinical prescriptions.
+
+const AMDR_ADULT = {
+  protein: { min: 0.10, max: 0.35 },
+  carbs: { min: 0.45, max: 0.65 },
+  fat: { min: 0.20, max: 0.35 },
+} as const;
+
+const AMDR_TEEN = {
+  protein: { min: 0.10, max: 0.30 },
+  carbs: { min: 0.45, max: 0.65 },
+  fat: { min: 0.25, max: 0.35 },
+} as const;
+
+const GOAL_PROTEIN_PCT: Record<GoalType, { active: number; inactive: number }> = {
+  deficit: { active: 0.25, inactive: 0.22 },
+  maintain: { active: 0.18, inactive: 0.15 },
+  muscle: { active: 0.25, inactive: 0.22 },
+  bulk: { active: 0.20, inactive: 0.18 },
+};
 
 const GOAL_FAT_PCT: Record<GoalType, number> = {
   deficit:  0.25,
@@ -110,14 +130,48 @@ function calcMicronutrientGoals(profile: Pick<UserProfile, 'age' | 'sex'>): Pick
   };
 }
 
-function getProteinPerKg(goal: GoalType, activityLevel: ActivityLevel): number {
-  const isActive = activityLevel >= 1.55;
+function getAmdr(profile: Pick<UserProfile, 'age'>) {
+  return profile.age <= 18 ? AMDR_TEEN : AMDR_ADULT;
+}
 
-  if (goal === 'deficit') return isActive ? 2.0 : 1.8;
-  if (goal === 'muscle') return isActive ? 2.0 : 1.8;
-  if (goal === 'bulk') return isActive ? 1.8 : 1.6;
+function macroGramsFromPct(kcal: number, pct: number, kcalPerGram: number): number {
+  return Math.round((kcal * pct) / kcalPerGram);
+}
 
-  return isActive ? 1.6 : 1.2;
+function calcMacroDistribution(profile: UserProfile, kcal: number) {
+  const amdr = getAmdr(profile);
+  const isActive = profile.activityLevel >= 1.55;
+  const desiredProteinPct = GOAL_PROTEIN_PCT[profile.goal][isActive ? 'active' : 'inactive'];
+  const minProteinPctFromRda = (profile.weight * 0.8 * 4) / kcal;
+  let proteinPct = clamp(
+    Math.max(desiredProteinPct, minProteinPctFromRda),
+    amdr.protein.min,
+    amdr.protein.max,
+  );
+  let fatPct = clamp(GOAL_FAT_PCT[profile.goal], amdr.fat.min, amdr.fat.max);
+  let carbsPct = 1 - proteinPct - fatPct;
+
+  if (carbsPct < amdr.carbs.min) {
+    const deficit = amdr.carbs.min - carbsPct;
+    const proteinRoom = Math.max(0, proteinPct - amdr.protein.min);
+    const proteinReduction = Math.min(deficit, proteinRoom);
+    proteinPct -= proteinReduction;
+    const remaining = deficit - proteinReduction;
+    if (remaining > 0) fatPct = Math.max(amdr.fat.min, fatPct - remaining);
+    carbsPct = 1 - proteinPct - fatPct;
+  }
+
+  if (carbsPct > amdr.carbs.max) {
+    const excess = carbsPct - amdr.carbs.max;
+    fatPct = Math.min(amdr.fat.max, fatPct + excess);
+    carbsPct = 1 - proteinPct - fatPct;
+  }
+
+  return {
+    protein: macroGramsFromPct(kcal, proteinPct, 4),
+    carbs: Math.max(macroGramsFromPct(kcal, carbsPct, 4), 130),
+    fat: macroGramsFromPct(kcal, fatPct, 9),
+  };
 }
 
 // ─── Main calculator ─────────────────────────────────────────────────────────
@@ -127,27 +181,19 @@ export function calcMacroGoals(profile: UserProfile): MacroGoals {
   const tdee = calcTDEE(tmb, profile.activityLevel);
   const kcal = roundToNearest(calcKcalTarget(tdee, profile), 10);
 
-  // Practical targets derived from DRI/AMDR ranges and sports nutrition ranges.
-  const protein = Math.round(profile.weight * getProteinPerKg(profile.goal, profile.activityLevel));
-  let fat       = Math.round((kcal * GOAL_FAT_PCT[profile.goal]) / 9);
-  let carbs     = Math.round((kcal - protein * 4 - fat * 9) / 4);
-
-  if (carbs < 130) {
-    carbs = 130;
-    fat = Math.round((kcal - protein * 4 - carbs * 4) / 9);
-  }
+  const macros = calcMacroDistribution(profile, kcal);
 
   const fiber  = Math.max(profile.sex === 'M' ? 30 : 25, Math.round((kcal / 1000) * 14));
-  const water  = Math.round(clamp(profile.weight * 35, profile.sex === 'M' ? 2500 : 2000, profile.sex === 'M' ? 3700 : 2700));
+  const water  = profile.sex === 'M' ? 3700 : 2700;
   const sugar  = Math.floor((kcal * 0.1) / 4);
   const sodium = DRI_GOALS.sodiumLimit;
   const micronutrients = calcMicronutrientGoals(profile);
 
   return {
     kcal,
-    protein: Math.max(protein, Math.round(profile.weight * 0.8), 50),
-    carbs:   Math.max(carbs, 130),
-    fat:     Math.max(fat, 20),
+    protein: macros.protein,
+    carbs:   macros.carbs,
+    fat:     macros.fat,
     fiber,
     water,
     sugar,

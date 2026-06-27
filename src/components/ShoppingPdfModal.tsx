@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -96,16 +97,16 @@ function formatPurchaseAmount(amount: number, unit: ShoppingPdfItem['unit']) {
   return `${Math.ceil(amount)} un`;
 }
 
-function collectFoodPlanItems(plan: FoodPlan) {
-  return plan.meals.flatMap((meal) => [
+function collectFoodPlanItems(plans: FoodPlan[]) {
+  return plans.flatMap((plan) => plan.meals).flatMap((meal) => [
     ...meal.items,
     ...(meal.substitutions ?? []).flatMap((option) => option.items),
   ]);
 }
 
-function buildEstimatedShoppingList(plan: FoodPlan): ShoppingPdfItem[] {
+function buildEstimatedShoppingList(plans: FoodPlan[]): ShoppingPdfItem[] {
   const grouped = new Map<string, { name: string; amount: number; unit: ShoppingPdfItem['unit'] }>();
-  collectFoodPlanItems(plan).forEach((item) => {
+  collectFoodPlanItems(plans).forEach((item) => {
     const quantity = item.quantityValue && item.quantityValue > 0 ? item.quantityValue : 1;
     const estimated = unitAmountForPurchase(item.name, quantity, item.unit);
     const key = `${normalizeItemName(item.name)}_${estimated.unit}`;
@@ -201,13 +202,21 @@ function createSimplePdfDataUri(title: string, lines: string[]) {
   return `data:application/pdf;base64,${encodeBase64(body)}`;
 }
 
-function buildShoppingPdf(plan: FoodPlan) {
-  const items = buildEstimatedShoppingList(plan);
+function buildShoppingPdf(plans: FoodPlan[]) {
+  const items = buildEstimatedShoppingList(plans);
   const total = items.reduce((sum, item) => sum + item.estimatedPrice, 0);
+  const title =
+    plans.length === 1
+      ? plans[0].title
+      : `Todos os planos alimentares (${plans.length})`;
+  const nutritionistName = plans[0]?.nutritionistName ?? 'NutriMeta';
   const lines = [
-    `Plano: ${plan.title}`,
-    `Nutricionista: ${plan.nutritionistName}`,
+    `Plano: ${title}`,
+    `Nutricionista: ${nutritionistName}`,
     `Gerado em: ${formatBrasiliaDate(new Date(), { day: '2-digit', month: '2-digit', year: 'numeric' })}`,
+    ...(plans.length > 1
+      ? ['', 'Planos incluidos:', ...plans.map((plan) => `- ${plan.title}`)]
+      : []),
     '',
     'Lista consolidada:',
     ...items.map((item) => `- ${item.name}: ${item.quantityLabel} | ${item.priceLabel} | estimado ${formatMoney(item.estimatedPrice)}`),
@@ -216,26 +225,48 @@ function buildShoppingPdf(plan: FoodPlan) {
     'Valores sao medias aproximadas e podem variar por cidade, marca, safra e mercado.',
   ];
   return {
+    title,
     items,
     total,
-    dataUri: createSimplePdfDataUri(`Lista de compras - ${plan.title}`, lines),
+    dataUri: createSimplePdfDataUri(`Lista de compras - ${title}`, lines),
   };
 }
 
 export function ShoppingPdfModal({
   plan,
+  plans,
   visible,
   onClose,
 }: {
   plan: FoodPlan | null;
+  plans?: FoodPlan[];
   visible: boolean;
   onClose: () => void;
 }) {
-  const pdf = useMemo(() => (plan ? buildShoppingPdf(plan) : null), [plan]);
+  const { width, height } = useWindowDimensions();
+  const activePlans = useMemo(
+    () => (plans && plans.length > 0 ? plans : plan ? [plan] : []),
+    [plan, plans],
+  );
+  const pdf = useMemo(
+    () => (activePlans.length > 0 ? buildShoppingPdf(activePlans) : null),
+    [activePlans],
+  );
+  const compact = width < 520 || height < 720;
+  const previewHeight = Math.round(
+    Math.max(
+      compact ? 220 : 300,
+      Math.min(
+        compact ? height * 0.42 : height * 0.5,
+        Platform.OS === 'web' ? 430 : 320,
+      ),
+    ),
+  );
+  const sheetMaxHeight = Math.round(height * (compact ? 0.94 : 0.88));
 
   function downloadPdf() {
-    if (!pdf || !plan) return;
-    const fileName = `lista-compras-${plan.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'plano'}.pdf`;
+    if (!pdf) return;
+    const fileName = `lista-compras-${pdf.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'plano'}.pdf`;
     if (Platform.OS === 'web') {
       const documentRef = (globalThis as any).document;
       if (!documentRef) return;
@@ -256,7 +287,7 @@ export function ShoppingPdfModal({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.bg}>
         <TouchableOpacity style={styles.backdrop} onPress={onClose} />
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { maxHeight: sheetMaxHeight }]}>
           <View style={styles.handle} />
           <View style={styles.header}>
             <Text style={styles.title}>Lista de compras</Text>
@@ -264,15 +295,15 @@ export function ShoppingPdfModal({
               <MaterialIcons name="close" size={20} color={Colors.gray600} />
             </TouchableOpacity>
           </View>
-          {pdf && plan ? (
+          {pdf ? (
             <>
               <View style={styles.summary}>
-                <Text style={styles.planTitle}>{plan.title}</Text>
+                <Text style={styles.planTitle} numberOfLines={2}>{pdf.title}</Text>
                 <Text style={styles.meta}>
                   {pdf.items.length} item(ns) · total estimado {formatMoney(pdf.total)}
                 </Text>
               </View>
-              <View style={styles.preview}>
+              <View style={[styles.preview, { height: previewHeight }]}>
                 {Platform.OS === 'web'
                   ? React.createElement('iframe' as any, {
                       src: pdf.dataUri,
@@ -310,7 +341,7 @@ export function ShoppingPdfModal({
 const styles = StyleSheet.create({
   bg: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(8, 80, 65, 0.18)' },
   backdrop: { ...StyleSheet.absoluteFillObject },
-  sheet: { maxHeight: '88%', backgroundColor: Colors.white, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, paddingTop: Spacing.sm },
+  sheet: { width: '100%', maxWidth: 720, alignSelf: 'center', backgroundColor: Colors.white, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, paddingTop: Spacing.sm },
   handle: { alignSelf: 'center', width: 42, height: 4, borderRadius: 2, backgroundColor: Colors.border, marginBottom: Spacing.sm },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm },
   title: { fontSize: Typography.lg, color: Colors.gray800, fontWeight: Typography.bold },
