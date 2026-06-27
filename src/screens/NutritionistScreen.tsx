@@ -42,6 +42,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FoodIcon } from "../components/FoodIcon";
 import { NativeTimePicker } from "../components/NativeTimePicker";
 import { NutritionistChatModal } from "../components/NutritionistChatModal";
+import { ShoppingPdfModal } from "../components/ShoppingPdfModal";
 import { useStore } from "../store";
 import {
   ActivityLevel,
@@ -124,6 +125,12 @@ type PlanSelectedFood = {
   quantity: number;
   unit: QuantityUnit;
   nutrition: FoodNutrition;
+};
+
+type PlanMealOptionDraft = {
+  id: string;
+  title: string;
+  selectedFoods: PlanSelectedFood[];
 };
 
 type EditableGoalKey = keyof MacroGoals;
@@ -554,14 +561,32 @@ function buildShoppingList(items: PlanSelectedFood[]): ShoppingListItem[] {
   }));
 }
 
-function selectedFoodsFromPlan(
-  plan: FoodPlan,
-  foods: FoodItem[],
-): PlanSelectedFood[] {
-  const meal = plan.meals[0];
-  if (!meal) return [];
+function buildShoppingListFromOptions(
+  options: PlanMealOptionDraft[],
+): ShoppingListItem[] {
+  return options.flatMap((option) => buildShoppingList(option.selectedFoods));
+}
 
-  return meal.items.map((item, index) => {
+function planItemsFromSelectedFoods(
+  items: PlanSelectedFood[],
+): FoodPlanMealItem[] {
+  return items.map((item) => ({
+    foodId: item.food.id,
+    name: item.food.name,
+    emoji: item.food.emoji,
+    quantity: `${item.quantityText} ${UNIT_LABELS[item.unit]}`,
+    quantityValue: item.quantity,
+    unit: item.unit,
+    nutrition: item.nutrition,
+  }));
+}
+
+function selectedFoodsFromMealItems(
+  items: FoodPlanMealItem[],
+  foods: FoodItem[],
+  keyPrefix: string,
+): PlanSelectedFood[] {
+  return items.map((item, index) => {
     const unit = item.unit ?? "porcao";
     const quantity =
       item.quantityValue ?? (parseOptionalPlanQuantity(item.quantity) || 1);
@@ -573,7 +598,7 @@ function selectedFoodsFromPlan(
             normalizeFoodSearchText(item.name),
       ) ??
       ({
-        id: item.foodId ?? `plan_${plan.id}_${index}`,
+        id: item.foodId ?? `${keyPrefix}_${index}`,
         name: item.name,
         emoji: item.emoji ?? "🍽️",
         aliases: [item.name.toLowerCase()],
@@ -586,7 +611,7 @@ function selectedFoodsFromPlan(
 
     const selectedUnit = food.nutritionPer[unit] ? unit : food.defaultUnit;
     return {
-      key: `${food.id}_${plan.id}_${index}`,
+      key: `${food.id}_${keyPrefix}_${index}`,
       food,
       quantityText: item.quantityValue
         ? String(item.quantityValue).replace(".", ",")
@@ -597,6 +622,32 @@ function selectedFoodsFromPlan(
         item.nutrition ?? calculateNutrition(food, quantity, selectedUnit),
     };
   });
+}
+
+function selectedFoodsFromPlan(
+  plan: FoodPlan,
+  foods: FoodItem[],
+): PlanSelectedFood[] {
+  const meal = plan.meals[0];
+  if (!meal) return [];
+  return selectedFoodsFromMealItems(meal.items, foods, plan.id);
+}
+
+function optionDraftsFromPlan(
+  plan: FoodPlan | null | undefined,
+  foods: FoodItem[],
+): PlanMealOptionDraft[] {
+  const meal = plan?.meals[0];
+  if (!plan || !meal) return [];
+  return (meal.substitutions ?? []).map((substitution, index) => ({
+    id: substitution.id || `sub_${index + 1}`,
+    title: substitution.title || `Substituição ${index + 1}`,
+    selectedFoods: selectedFoodsFromMealItems(
+      substitution.items,
+      foods,
+      `${plan.id}_${substitution.id || index}`,
+    ),
+  }));
 }
 
 const PLAN_NUTRITION_ROWS: {
@@ -1021,7 +1072,9 @@ function FoodPlanModal({
   const [foodQuery, setFoodQuery] = useState("");
   const [foods, setFoods] = useState<FoodItem[]>([]);
   const [loadingFoods, setLoadingFoods] = useState(false);
+  const [activeOptionId, setActiveOptionId] = useState("main");
   const [selectedFoods, setSelectedFoods] = useState<PlanSelectedFood[]>([]);
+  const [substitutions, setSubstitutions] = useState<PlanMealOptionDraft[]>([]);
   const [timePickerOpen, setTimePickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -1033,9 +1086,11 @@ function FoodPlanModal({
     setMealPeriod(meal?.period ?? "breakfast");
     setMealTime(meal?.time ?? "");
     setFoodQuery("");
+    setActiveOptionId("main");
     setSelectedFoods(
       initialPlan ? selectedFoodsFromPlan(initialPlan, foods) : [],
     );
+    setSubstitutions(optionDraftsFromPlan(initialPlan, foods));
     setTimePickerOpen(false);
   }, [foods, initialPlan, visible]);
 
@@ -1071,10 +1126,64 @@ function FoodPlanModal({
       ),
     [selectedFoods],
   );
+  const activeSubstitution = substitutions.find(
+    (option) => option.id === activeOptionId,
+  );
+  const activeSelectedFoods =
+    activeOptionId === "main"
+      ? selectedFoods
+      : activeSubstitution?.selectedFoods ?? [];
+  const activePlanTotal = useMemo(
+    () =>
+      sumNutrition(
+        activeSelectedFoods.map((item) => ({ nutrition: item.nutrition })),
+      ),
+    [activeSelectedFoods],
+  );
+
+  function updateActiveSelectedFoods(
+    updater: (items: PlanSelectedFood[]) => PlanSelectedFood[],
+  ) {
+    if (activeOptionId === "main") {
+      setSelectedFoods(updater);
+      return;
+    }
+    setSubstitutions((options) =>
+      options.map((option) =>
+        option.id === activeOptionId
+          ? { ...option, selectedFoods: updater(option.selectedFoods) }
+          : option,
+      ),
+    );
+  }
+
+  function addSubstitutionOption() {
+    const id = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const nextOption: PlanMealOptionDraft = {
+      id,
+      title: `Substituição ${substitutions.length + 1}`,
+      selectedFoods: [],
+    };
+    setSubstitutions((options) => [...options, nextOption]);
+    setActiveOptionId(id);
+  }
+
+  function removeSubstitutionOption(id: string) {
+    setSubstitutions((options) => options.filter((option) => option.id !== id));
+    if (activeOptionId === id) setActiveOptionId("main");
+  }
+
+  function renameSubstitutionOption(id: string, title: string) {
+    setSubstitutions((options) =>
+      options.map((option) =>
+        option.id === id ? { ...option, title } : option,
+      ),
+    );
+  }
 
   function addFoodToPlan(food: FoodItem) {
     const unit = food.defaultUnit;
-    setSelectedFoods((items) => [
+    updateActiveSelectedFoods((items) => [
       ...items,
       {
         key: `${food.id}_${Date.now()}_${Math.random().toString(36).slice(2)}`,
@@ -1091,7 +1200,7 @@ function FoodPlanModal({
     key: string,
     changes: { quantityText?: string; unit?: QuantityUnit },
   ) {
-    setSelectedFoods((items) =>
+    updateActiveSelectedFoods((items) =>
       items.map((item) => {
         if (item.key !== key) return item;
         if (changes.unit) return recalcPlanFood(item, { unit: changes.unit });
@@ -1134,7 +1243,9 @@ function FoodPlanModal({
       return null;
     }
     if (
-      selectedFoods.some(
+      [selectedFoods, ...substitutions.map((option) => option.selectedFoods)]
+        .flat()
+        .some(
         (item) => !item.quantityText.trim() || item.quantity <= 0,
       )
     ) {
@@ -1151,15 +1262,10 @@ function FoodPlanModal({
       );
       return null;
     }
-    const items: FoodPlanMealItem[] = selectedFoods.map((item) => ({
-      foodId: item.food.id,
-      name: item.food.name,
-      emoji: item.food.emoji,
-      quantity: `${item.quantityText} ${UNIT_LABELS[item.unit]}`,
-      quantityValue: item.quantity,
-      unit: item.unit,
-      nutrition: item.nutrition,
-    }));
+    const validSubstitutions = substitutions.filter(
+      (option) => option.selectedFoods.length > 0,
+    );
+    const items = planItemsFromSelectedFoods(selectedFoods);
     return [
       {
         period: mealPeriod,
@@ -1168,6 +1274,14 @@ function FoodPlanModal({
         instructions: notes.trim() || undefined,
         items,
         totalNutrition: planTotal,
+        substitutions: validSubstitutions.map((option, index) => ({
+          id: option.id,
+          title: option.title.trim() || `Substituição ${index + 1}`,
+          items: planItemsFromSelectedFoods(option.selectedFoods),
+          totalNutrition: sumNutrition(
+            option.selectedFoods.map((item) => ({ nutrition: item.nutrition })),
+          ),
+        })),
       },
     ];
   }
@@ -1186,7 +1300,10 @@ function FoodPlanModal({
         title: title.trim(),
         notes: notes.trim() || undefined,
         meals,
-        shoppingList: buildShoppingList(selectedFoods),
+        shoppingList: buildShoppingListFromOptions([
+          { id: "main", title: "Opção principal", selectedFoods },
+          ...substitutions.filter((option) => option.selectedFoods.length > 0),
+        ]),
         totalNutrition: planTotal,
       };
       await onSave(
@@ -1304,6 +1421,90 @@ function FoodPlanModal({
               </>
             )}
 
+            <View style={styles.planOptionPanel}>
+              <View style={styles.planOptionHeader}>
+                <Text style={styles.fieldLabel}>Opções desta refeição</Text>
+                <TouchableOpacity
+                  style={styles.planOptionAddBtn}
+                  onPress={addSubstitutionOption}
+                >
+                  <MaterialIcons
+                    name="playlist-add"
+                    size={18}
+                    color={Colors.green600}
+                  />
+                  <Text style={styles.planOptionAddText}>Substituição</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <View style={styles.planOptionTabs}>
+                  <TouchableOpacity
+                    style={[
+                      styles.planOptionTab,
+                      activeOptionId === "main" && styles.planOptionTabActive,
+                    ]}
+                    onPress={() => setActiveOptionId("main")}
+                  >
+                    <Text
+                      style={[
+                        styles.planOptionTabText,
+                        activeOptionId === "main" &&
+                          styles.planOptionTabTextActive,
+                      ]}
+                    >
+                      Principal
+                    </Text>
+                  </TouchableOpacity>
+                  {substitutions.map((option, index) => (
+                    <TouchableOpacity
+                      key={option.id}
+                      style={[
+                        styles.planOptionTab,
+                        activeOptionId === option.id &&
+                          styles.planOptionTabActive,
+                      ]}
+                      onPress={() => setActiveOptionId(option.id)}
+                    >
+                      <Text
+                        style={[
+                          styles.planOptionTabText,
+                          activeOptionId === option.id &&
+                            styles.planOptionTabTextActive,
+                        ]}
+                      >
+                        {option.title.trim() || `Substituição ${index + 1}`}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </ScrollView>
+              {activeSubstitution ? (
+                <View style={styles.planSubstitutionNameRow}>
+                  <TextInput
+                    style={styles.planSubstitutionNameInput}
+                    value={activeSubstitution.title}
+                    onChangeText={(value) =>
+                      renameSubstitutionOption(activeSubstitution.id, value)
+                    }
+                    placeholder="Nome da substituição"
+                    placeholderTextColor={Colors.gray400}
+                  />
+                  <TouchableOpacity
+                    style={styles.planSubstitutionRemoveBtn}
+                    onPress={() =>
+                      removeSubstitutionOption(activeSubstitution.id)
+                    }
+                  >
+                    <MaterialIcons
+                      name="delete-outline"
+                      size={20}
+                      color={Colors.danger}
+                    />
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+            </View>
+
             <View style={styles.planFoodSearchPanel}>
               <Text style={styles.fieldLabel}>Adicionar alimento</Text>
               <View style={styles.searchRow}>
@@ -1359,15 +1560,17 @@ function FoodPlanModal({
           <View style={styles.planSelectedBox}>
             <View style={styles.planSelectedHeader}>
               <Text style={styles.sectionTitleNoMargin}>
-                Alimentos adicionados
+                {activeOptionId === "main"
+                  ? "Alimentos da opção principal"
+                  : "Alimentos da substituição"}
               </Text>
               <Text style={styles.planSelectedTotal}>
-                {Math.round(planTotal.kcal)} kcal
+                {Math.round(activePlanTotal.kcal)} kcal
               </Text>
             </View>
-            {selectedFoods.length === 0 ? (
+            {activeSelectedFoods.length === 0 ? (
               <Text style={styles.mutedText}>
-                Use o botão + para montar esta refeição do plano.
+                Use o botão + para montar esta opção da refeição.
               </Text>
             ) : (
               <ScrollView
@@ -1375,7 +1578,7 @@ function FoodPlanModal({
                 nestedScrollEnabled
                 showsVerticalScrollIndicator
               >
-                {selectedFoods.map((item) => (
+                {activeSelectedFoods.map((item) => (
                   <View key={item.key} style={styles.planSelectedItem}>
                     <View style={styles.planSelectedTop}>
                       <View style={styles.planFoodEmoji}>
@@ -1397,7 +1600,7 @@ function FoodPlanModal({
                       </View>
                       <TouchableOpacity
                         onPress={() =>
-                          setSelectedFoods((items) =>
+                          updateActiveSelectedFoods((items) =>
                             items.filter((current) => current.key !== item.key),
                           )
                         }
@@ -1509,6 +1712,7 @@ export function NutritionistScreen() {
   const [editPatientOpen, setEditPatientOpen] = useState(false);
   const [foodPlanOpen, setFoodPlanOpen] = useState(false);
   const [editingFoodPlan, setEditingFoodPlan] = useState<FoodPlan | null>(null);
+  const [shoppingPdfPlan, setShoppingPdfPlan] = useState<FoodPlan | null>(null);
   const [foodPlans, setFoodPlans] = useState<FoodPlan[]>([]);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
@@ -2111,17 +2315,32 @@ export function NutritionistScreen() {
                   <Text style={styles.sectionTitleNoMargin}>
                     Planos alimentares
                   </Text>
-                  <TouchableOpacity
-                    style={styles.chatBtn}
-                    onPress={openNewFoodPlan}
-                  >
-                    <MaterialIcons
-                      name="add"
-                      size={18}
-                      color={Colors.green600}
-                    />
-                    <Text style={styles.chatBtnText}>Adicionar</Text>
-                  </TouchableOpacity>
+                  <View style={styles.patientActionRow}>
+                    {foodPlans[0] ? (
+                      <TouchableOpacity
+                        style={styles.chatBtn}
+                        onPress={() => setShoppingPdfPlan(foodPlans[0])}
+                      >
+                        <MaterialIcons
+                          name="picture-as-pdf"
+                          size={17}
+                          color={Colors.green600}
+                        />
+                        <Text style={styles.chatBtnText}>Lista PDF</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                      style={styles.chatBtn}
+                      onPress={openNewFoodPlan}
+                    >
+                      <MaterialIcons
+                        name="add"
+                        size={18}
+                        color={Colors.green600}
+                      />
+                      <Text style={styles.chatBtnText}>Adicionar</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 {foodPlans.length === 0 ? (
                   <Text style={styles.mutedText}>
@@ -2813,6 +3032,11 @@ export function NutritionistScreen() {
           setEditingFoodPlan(null);
         }}
         onSave={handleSaveFoodPlan}
+      />
+      <ShoppingPdfModal
+        visible={Boolean(shoppingPdfPlan)}
+        plan={shoppingPdfPlan}
+        onClose={() => setShoppingPdfPlan(null)}
       />
     </SafeAreaView>
   );
@@ -3667,6 +3891,86 @@ const styles = StyleSheet.create({
     color: Colors.green600,
     fontWeight: Typography.bold,
     fontSize: Typography.sm,
+  },
+  planOptionPanel: {
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  planOptionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
+    marginBottom: 6,
+  },
+  planOptionAddBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderWidth: 1,
+    borderColor: Colors.green400,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+    backgroundColor: Colors.green50,
+  },
+  planOptionAddText: {
+    fontSize: Typography.xs,
+    color: Colors.green600,
+    fontWeight: Typography.bold,
+  },
+  planOptionTabs: {
+    flexDirection: "row",
+    gap: 6,
+    paddingBottom: 2,
+  },
+  planOptionTab: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 7,
+    backgroundColor: Colors.white,
+  },
+  planOptionTabActive: {
+    borderColor: Colors.green400,
+    backgroundColor: Colors.green50,
+  },
+  planOptionTabText: {
+    fontSize: Typography.xs,
+    color: Colors.gray600,
+    fontWeight: Typography.semibold,
+  },
+  planOptionTabTextActive: {
+    color: Colors.green600,
+    fontWeight: Typography.bold,
+  },
+  planSubstitutionNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    marginTop: Spacing.sm,
+  },
+  planSubstitutionNameInput: {
+    flex: 1,
+    minHeight: 38,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.white,
+    paddingHorizontal: Spacing.sm,
+    color: Colors.gray800,
+    fontSize: Typography.sm,
+  },
+  planSubstitutionRemoveBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.proteinL,
+    borderWidth: 1,
+    borderColor: Colors.protein,
   },
   planFoodSearchPanel: { marginTop: Spacing.sm, marginBottom: Spacing.md },
   planFoodResults: {

@@ -254,6 +254,15 @@ export interface FoodPlanMeal {
   instructions?: string;
   items: FoodPlanMealItem[];
   totalNutrition?: FoodNutrition;
+  substitutions?: FoodPlanMealSubstitution[];
+}
+
+export interface FoodPlanMealSubstitution {
+  id: string;
+  title: string;
+  instructions?: string;
+  items: FoodPlanMealItem[];
+  totalNutrition?: FoodNutrition;
 }
 
 export interface ShoppingListItem {

@@ -27,6 +27,7 @@ import { saveMealEntryOrQueue } from '../services/pendingSyncService';
 import { subscribePatientNotifications } from '../services/groupService';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { NutritionistChatModal } from '../components/NutritionistChatModal';
+import { ShoppingPdfModal } from '../components/ShoppingPdfModal';
 import { useStore, selectGoals, selectNotifications, selectTodayLog, selectUnreadCount } from '../store';
 import { calcMacroGoals, formatBrasiliaDate, formatKcal, formatGrams, formatNutritionDetails, getBrasiliaHour, macroPercent, generateId } from '../utils/nutrition';
 import {
@@ -40,7 +41,7 @@ import {
   parseProfileNumber,
   validateProfileBasics,
 } from '../utils/profileValidation';
-import { ActivityLevel, BiologicalSex, FoodNutrition, FoodPlan, FoodPlanMeal, GoalType, MacroGoals, MealEntry, NutritionistPatientLink, ShoppingListItem, UserProfile } from '../types';
+import { ActivityLevel, BiologicalSex, FoodNutrition, FoodPlan, FoodPlanMeal, FoodPlanMealSubstitution, GoalType, MacroGoals, MealEntry, NutritionistPatientLink, UserProfile } from '../types';
 
 const RING_SIZE = 160;
 const RING_STROKE = 14;
@@ -187,35 +188,56 @@ function parseNumber(value: string, fallback: number) {
   return parseProfileNumber(value, fallback);
 }
 
-function mergeShoppingList(items: ShoppingListItem[]): ShoppingListItem[] {
-  const byName = new Map<string, ShoppingListItem>();
-  items.forEach((item) => {
-    const key = item.name.trim().toLowerCase();
-    if (!key) return;
-    const current = byName.get(key);
-    if (!current) {
-      byName.set(key, item);
-      return;
-    }
-    byName.set(key, {
-      ...current,
-      quantity: [current.quantity, item.quantity].filter(Boolean).join(' + '),
-      unit: current.unit || item.unit,
-    });
-  });
-  return Array.from(byName.values());
-}
-
 function FoodPlanCard({
   plan,
   completingMealKey,
   onCompleteMeal,
+  onOpenShoppingPdf,
+  selectedOptions,
+  openOptionKey,
+  skippedMealKeys,
+  onSelectOption,
+  onToggleOptions,
+  onSkipMeal,
 }: {
   plan: FoodPlan;
   completingMealKey?: string | null;
   onCompleteMeal: (plan: FoodPlan, meal: FoodPlanMeal) => void;
+  onOpenShoppingPdf: (plan: FoodPlan) => void;
+  selectedOptions: Record<string, string>;
+  openOptionKey: string | null;
+  skippedMealKeys: Record<string, boolean>;
+  onSelectOption: (mealKey: string, optionId: string) => void;
+  onToggleOptions: (mealKey: string) => void;
+  onSkipMeal: (mealKey: string) => void;
 }) {
-  const shoppingList = mergeShoppingList(plan.shoppingList);
+  const mealKey = (meal: FoodPlanMeal) => `${plan.id}_${meal.period}_${meal.title}`;
+  const mealOptions = (meal: FoodPlanMeal) => [
+    {
+      id: 'main',
+      title: 'Opção principal',
+      items: meal.items,
+      totalNutrition: meal.totalNutrition,
+      instructions: meal.instructions,
+    },
+    ...(meal.substitutions ?? []),
+  ];
+  const selectedMealFromOption = (
+    meal: FoodPlanMeal,
+    option: FoodPlanMealSubstitution | {
+      id: string;
+      title: string;
+      items: FoodPlanMeal['items'];
+      totalNutrition?: FoodNutrition;
+      instructions?: string;
+    },
+  ): FoodPlanMeal => ({
+    ...meal,
+    instructions: option.instructions ?? meal.instructions,
+    items: option.items,
+    totalNutrition: option.totalNutrition,
+  });
+
   return (
     <View style={styles.foodPlanPanel}>
       <View style={styles.foodPlanHeader}>
@@ -229,31 +251,107 @@ function FoodPlanCard({
       {plan.totalNutrition ? (
         <Text style={styles.foodPlanNotes}>{formatNutritionDetails(plan.totalNutrition, { includeKcal: true })}</Text>
       ) : null}
-      {plan.meals.slice(0, 4).map((meal) => (
-        <View key={`${meal.period}_${meal.title}`} style={styles.foodPlanMeal}>
-          <Text style={styles.foodPlanMealTitle}>{meal.time ? `${meal.time} · ${meal.title}` : meal.title}</Text>
-          <Text style={styles.foodPlanMealItems}>
-            {meal.items.map((item) => `${item.quantity} ${item.name}`.trim()).join(', ')}
-          </Text>
-          {meal.totalNutrition ? (
-            <Text style={styles.foodPlanMealNutrition}>{formatNutritionDetails(meal.totalNutrition, { includeKcal: true })}</Text>
-          ) : null}
-          <TouchableOpacity
-            style={[styles.foodPlanDoneBtn, completingMealKey === `${plan.id}_${meal.period}_${meal.title}` && styles.foodPlanDoneBtnDisabled]}
-            onPress={() => onCompleteMeal(plan, meal)}
-            disabled={completingMealKey === `${plan.id}_${meal.period}_${meal.title}`}
-          >
-            <MaterialIcons name="check-circle" size={18} color={Colors.white} />
-            <Text style={styles.foodPlanDoneText}>
-              {completingMealKey === `${plan.id}_${meal.period}_${meal.title}` ? 'Registrando...' : 'Fiz esta refeição'}
+      {plan.meals.slice(0, 4).map((meal) => {
+        const key = mealKey(meal);
+        const options = mealOptions(meal);
+        const selectedOptionId = selectedOptions[key] ?? 'main';
+        const selectedOption =
+          options.find((option) => option.id === selectedOptionId) ?? options[0];
+        const selectedMeal = selectedMealFromOption(meal, selectedOption);
+        const isSkipped = skippedMealKeys[key];
+        const isCompleting = completingMealKey === key;
+
+        return (
+          <View key={`${meal.period}_${meal.title}`} style={[styles.foodPlanMeal, isSkipped && styles.foodPlanMealSkipped]}>
+            <View style={styles.foodPlanMealHeader}>
+              <View style={styles.foodPlanMealHeaderText}>
+                <Text style={styles.foodPlanMealTitle}>{meal.time ? `${meal.time} · ${meal.title}` : meal.title}</Text>
+                <Text style={styles.foodPlanOptionLabel}>{selectedOption.title}</Text>
+              </View>
+            <View style={styles.foodPlanMealHeaderActions}>
+              <TouchableOpacity
+                style={styles.foodPlanShoppingIconBtn}
+                onPress={() => onOpenShoppingPdf(plan)}
+                accessibilityRole="button"
+                accessibilityLabel="Abrir lista de compras em PDF"
+              >
+                <MaterialIcons name="picture-as-pdf" size={19} color={Colors.green600} />
+              </TouchableOpacity>
+              {options.length > 1 ? (
+              <TouchableOpacity
+                style={styles.foodPlanDropdownBtn}
+                onPress={() => onToggleOptions(key)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Selecionar opção da refeição"
+                >
+                  <MaterialIcons
+                    name={openOptionKey === key ? 'expand-less' : 'expand-more'}
+                    size={20}
+                  color={Colors.green600}
+                />
+              </TouchableOpacity>
+              ) : null}
+            </View>
+          </View>
+            {openOptionKey === key ? (
+              <View style={styles.foodPlanDropdown}>
+                {options.map((option) => (
+                  <TouchableOpacity
+                    key={option.id}
+                    style={[
+                      styles.foodPlanDropdownItem,
+                      selectedOption.id === option.id && styles.foodPlanDropdownItemActive,
+                    ]}
+                    onPress={() => onSelectOption(key, option.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.foodPlanDropdownText,
+                        selectedOption.id === option.id && styles.foodPlanDropdownTextActive,
+                      ]}
+                    >
+                      {option.title}
+                    </Text>
+                    {selectedOption.id === option.id ? (
+                      <MaterialIcons name="check" size={18} color={Colors.green600} />
+                    ) : null}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+            <Text style={styles.foodPlanMealItems}>
+              {selectedMeal.items.map((item) => `${item.quantity} ${item.name}`.trim()).join(', ')}
             </Text>
-          </TouchableOpacity>
-        </View>
-      ))}
+            {selectedMeal.totalNutrition ? (
+              <Text style={styles.foodPlanMealNutrition}>{formatNutritionDetails(selectedMeal.totalNutrition, { includeKcal: true })}</Text>
+            ) : null}
+            <View style={styles.foodPlanMealActions}>
+              <TouchableOpacity
+                style={[styles.foodPlanSkipBtn, isSkipped && styles.foodPlanSkipBtnActive]}
+                onPress={() => onSkipMeal(key)}
+              >
+                <MaterialIcons name="skip-next" size={18} color={isSkipped ? Colors.white : Colors.gray600} />
+                <Text style={[styles.foodPlanSkipText, isSkipped && styles.foodPlanSkipTextActive]}>
+                  {isSkipped ? 'Pulada' : 'Pular'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.foodPlanDoneBtn, (isCompleting || isSkipped) && styles.foodPlanDoneBtnDisabled]}
+                onPress={() => onCompleteMeal(plan, selectedMeal)}
+                disabled={isCompleting || isSkipped}
+              >
+                <MaterialIcons name="check-circle" size={18} color={Colors.white} />
+                <Text style={styles.foodPlanDoneText}>
+                  {isCompleting ? 'Registrando...' : 'Fiz esta refeição'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        );
+      })}
     </View>
   );
 }
-
 function SettingsModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   type BasicGoalKey = 'kcal' | 'protein' | 'carbs' | 'fat' | 'fiber' | 'water' | 'sugar' | 'sodium';
   const user = useStore((s) => s.user);
@@ -809,6 +907,10 @@ export function HomeScreen() {
   const [unreadChatCounts, setUnreadChatCounts] = useState<Record<string, number>>({});
   const [chatLink, setChatLink] = useState<NutritionistPatientLink | null>(null);
   const [completingMealKey, setCompletingMealKey] = useState<string | null>(null);
+  const [selectedFoodPlanOptions, setSelectedFoodPlanOptions] = useState<Record<string, string>>({});
+  const [openFoodPlanOptionKey, setOpenFoodPlanOptionKey] = useState<string | null>(null);
+  const [skippedFoodPlanMeals, setSkippedFoodPlanMeals] = useState<Record<string, boolean>>({});
+  const [shoppingPdfPlan, setShoppingPdfPlan] = useState<FoodPlan | null>(null);
 
   const totals: FoodNutrition = useMemo(
     () => todayLog?.totalNutrition ?? { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
@@ -929,6 +1031,22 @@ export function HomeScreen() {
     };
   }
 
+  function handleSelectFoodPlanOption(mealKey: string, optionId: string) {
+    setSelectedFoodPlanOptions((items) => ({ ...items, [mealKey]: optionId }));
+    setOpenFoodPlanOptionKey(null);
+  }
+
+  function handleToggleFoodPlanOptions(mealKey: string) {
+    setOpenFoodPlanOptionKey((current) => (current === mealKey ? null : mealKey));
+  }
+
+  function handleSkipFoodPlanMeal(mealKey: string) {
+    setSkippedFoodPlanMeals((items) => ({
+      ...items,
+      [mealKey]: !items[mealKey],
+    }));
+  }
+
   async function handleCompleteFoodPlanMeal(plan: FoodPlan, meal: FoodPlanMeal) {
     if (!user) return;
     const items = meal.items.filter((item) => item.nutrition);
@@ -1040,6 +1158,13 @@ export function HomeScreen() {
             plan={latestFoodPlan}
             completingMealKey={completingMealKey}
             onCompleteMeal={handleCompleteFoodPlanMeal}
+            onOpenShoppingPdf={setShoppingPdfPlan}
+            selectedOptions={selectedFoodPlanOptions}
+            openOptionKey={openFoodPlanOptionKey}
+            skippedMealKeys={skippedFoodPlanMeals}
+            onSelectOption={handleSelectFoodPlanOption}
+            onToggleOptions={handleToggleFoodPlanOptions}
+            onSkipMeal={handleSkipFoodPlanMeal}
           />
         ) : null}
 
@@ -1049,6 +1174,11 @@ export function HomeScreen() {
 
       <SettingsModal visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <HelpModal visible={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ShoppingPdfModal
+        visible={Boolean(shoppingPdfPlan)}
+        plan={shoppingPdfPlan}
+        onClose={() => setShoppingPdfPlan(null)}
+      />
       <ConfirmDialog
         visible={logoutConfirmOpen}
         title="Sair da conta"
@@ -1184,16 +1314,32 @@ const styles = StyleSheet.create({
   foodPlanAuthor: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.bold },
   foodPlanNotes: { fontSize: Typography.sm, color: Colors.gray600, lineHeight: 19, marginBottom: Spacing.sm },
   foodPlanMeal: { backgroundColor: Colors.gray50, borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.xs },
+  foodPlanMealSkipped: { opacity: 0.72 },
+  foodPlanMealHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: Spacing.sm },
+  foodPlanMealHeaderText: { flex: 1 },
   foodPlanMealTitle: { fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.bold },
+  foodPlanOptionLabel: { marginTop: 2, fontSize: Typography.xs, color: Colors.green600, fontWeight: Typography.bold },
+  foodPlanMealHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  foodPlanShoppingIconBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green100 },
+  foodPlanDropdownBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green100 },
+  foodPlanDropdown: { marginTop: Spacing.xs, borderWidth: 1, borderColor: Colors.border, borderRadius: Radius.sm, overflow: 'hidden', backgroundColor: Colors.white },
+  foodPlanDropdownItem: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm, paddingHorizontal: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
+  foodPlanDropdownItemActive: { backgroundColor: Colors.green50 },
+  foodPlanDropdownText: { flex: 1, fontSize: Typography.sm, color: Colors.gray600, fontWeight: Typography.semibold },
+  foodPlanDropdownTextActive: { color: Colors.green600 },
   foodPlanMealItems: { marginTop: 3, fontSize: Typography.xs, color: Colors.gray600, lineHeight: 17 },
   foodPlanMealNutrition: { marginTop: 4, fontSize: Typography.xs, color: Colors.gray400, lineHeight: 17 },
-  foodPlanDoneBtn: { marginTop: Spacing.sm, minHeight: 38, borderRadius: Radius.md, backgroundColor: Colors.green400, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs },
+  foodPlanMealActions: { marginTop: Spacing.sm, flexDirection: 'row', gap: Spacing.xs },
+  foodPlanSkipBtn: { minHeight: 38, paddingHorizontal: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.white, borderWidth: 1, borderColor: Colors.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  foodPlanSkipBtnActive: { backgroundColor: Colors.gray600, borderColor: Colors.gray600 },
+  foodPlanSkipText: { color: Colors.gray600, fontSize: Typography.sm, fontWeight: Typography.bold },
+  foodPlanSkipTextActive: { color: Colors.white },
+  foodPlanDoneBtn: { flex: 1, minHeight: 38, borderRadius: Radius.md, backgroundColor: Colors.green400, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs },
   foodPlanDoneBtnDisabled: { opacity: 0.65 },
   foodPlanDoneText: { color: Colors.white, fontSize: Typography.sm, fontWeight: Typography.bold },
   shoppingTitle: { marginTop: Spacing.sm, marginBottom: Spacing.xs, fontSize: Typography.sm, color: Colors.gray800, fontWeight: Typography.bold },
   shoppingItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingVertical: 5 },
   shoppingText: { flex: 1, fontSize: Typography.sm, color: Colors.gray600 },
-
   nutritionPanel: {
     marginHorizontal: Spacing.base,
     marginBottom: Spacing.sm,
