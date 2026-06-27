@@ -35,8 +35,8 @@ service cloud.firestore {
 
     match /globalFoods/{foodId} {
       allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update: if request.auth != null;
+      allow create, update: if request.auth != null
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
     match /savedMeals/{mealId} {
@@ -71,7 +71,10 @@ service cloud.firestore {
 
     match /communityFollows/{followId} {
       allow read: if request.auth != null;
-      allow create, delete: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.followerId == request.auth.uid;
+      allow delete: if request.auth != null
+        && resource.data.followerId == request.auth.uid;
     }
 
     match /nutritionistLinks/{linkId} {
@@ -96,10 +99,6 @@ service cloud.firestore {
       allow create: if request.auth != null
         && request.resource.data.senderId == request.auth.uid
         && get(/databases/$(database)/documents/nutritionistLinks/$(request.resource.data.linkId)).data.status == 'accepted';
-      allow update: if request.auth != null && (
-        resource.data.nutritionistId == request.auth.uid ||
-        resource.data.patientId == request.auth.uid
-      );
     }
 
     match /foodPlans/{planId} {

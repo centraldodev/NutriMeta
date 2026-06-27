@@ -1,4 +1,4 @@
-import { collection, doc, getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, limit, query, serverTimestamp, setDoc } from 'firebase/firestore';
 
 import { isFirebaseConfigured } from '../config';
 import { FoodItem } from '../types';
@@ -22,7 +22,7 @@ export async function getCustomFoods(userId: string): Promise<FoodItem[]> {
   const localFoods = [...LOCAL_FOODS];
 
   if (isFirebaseConfigured && userId !== 'dev_user') {
-    const snap = await getDocs(collection(db, COLLECTIONS.globalFoods));
+    const snap = await getDocs(query(collection(db, COLLECTIONS.globalFoods), limit(500)));
     const firebaseFoods = snap.docs.flatMap((docSnap) => {
       const { createdBy, updatedAt: _updatedAt, ...food } = docSnap.data();
       return createdBy ? [food as FoodItem] : [];

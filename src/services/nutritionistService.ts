@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDocs,
+  limit,
   onSnapshot,
   query,
   serverTimestamp,
@@ -15,7 +16,12 @@ import { DailyLog, FoodPlan, GroupNotification, UserProfile } from '../types';
 import { formatDate, generateId } from '../utils/nutrition';
 
 export async function getAllPatientProfiles(): Promise<UserProfile[]> {
-  const snap = await getDocs(collection(db, COLLECTIONS.profiles));
+  const q = query(
+    collection(db, COLLECTIONS.profiles),
+    where('onboardingComplete', '==', true),
+    limit(200),
+  );
+  const snap = await getDocs(q);
   return snap.docs
     .map((docSnap) => {
       const data = docSnap.data();
@@ -25,7 +31,6 @@ export async function getAllPatientProfiles(): Promise<UserProfile[]> {
         updatedAt: data.updatedAt?.toDate?.() ?? new Date(),
       } as UserProfile;
     })
-    .filter((profile) => profile.onboardingComplete)
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -35,7 +40,9 @@ export async function getPatientRecentLogs(userId: string, days = 31): Promise<D
   const cutoff = formatDate(firstAllowedDate);
   const q = query(
     collection(db, COLLECTIONS.dailyLogs),
-    where('userId', '==', userId)
+    where('userId', '==', userId),
+    where('date', '>=', cutoff),
+    limit(days),
   );
   const snap = await getDocs(q);
   return snap.docs.map((docSnap) => {
@@ -48,10 +55,7 @@ export async function getPatientRecentLogs(userId: string, days = 31): Promise<D
         addedAt: entry.addedAt?.toDate?.() ?? new Date(),
       })),
     } as DailyLog;
-  })
-    .filter((log) => log.date >= cutoff)
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, days);
+  }).sort((a, b) => b.date.localeCompare(a.date));
 }
 
 function mapFoodPlan(id: string, data: any): FoodPlan {

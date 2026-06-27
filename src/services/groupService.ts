@@ -10,7 +10,9 @@ import {
   query,
   where,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   serverTimestamp,
   Unsubscribe,
 } from 'firebase/firestore';
@@ -186,7 +188,11 @@ export async function deleteCommunityPost(postId: string, authorId: string): Pro
 export function subscribeCommunityPosts(
   onUpdate: (posts: CommunityPost[]) => void
 ): Unsubscribe {
-  const q = collection(db, COMMUNITY_POSTS_COLLECTION);
+  const q = query(
+    collection(db, COMMUNITY_POSTS_COLLECTION),
+    orderBy('createdAt', 'desc'),
+    limit(80),
+  );
   return onSnapshot(q, (snap) => {
     onUpdate(snap.docs.map((docSnap) => {
       const data = docSnap.data();
@@ -195,7 +201,7 @@ export function subscribeCommunityPosts(
         ...data,
         createdAt: readDate(data.createdAt),
       } as CommunityPost;
-    }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 80));
+    }));
   });
 }
 
@@ -415,7 +421,8 @@ export function subscribeCommunityComments(
 ): Unsubscribe {
   const q = query(
     collection(db, COMMUNITY_COMMENTS_COLLECTION),
-    where('groupId', '==', groupId)
+    where('groupId', '==', groupId),
+    limit(80),
   );
   return onSnapshot(q, (snap) => {
     onUpdate(snap.docs.map((docSnap) => {
@@ -425,7 +432,7 @@ export function subscribeCommunityComments(
         ...data,
         createdAt: readDate(data.createdAt),
       } as CommunityComment;
-    }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 80));
+    }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()));
   });
 }
 
@@ -500,7 +507,8 @@ export function subscribeGroupNotifications(
 ): Unsubscribe {
   const q = query(
     collection(db, COLLECTIONS.notifications),
-    where('groupId', '==', groupId)
+    where('groupId', '==', groupId),
+    limit(20),
   );
   return onSnapshot(q, (snap) => {
     const notifs = snap.docs
@@ -511,8 +519,7 @@ export function subscribeGroupNotifications(
           createdAt: readDate(data.createdAt),
         } as GroupNotification;
       })
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, 20);
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     onUpdate(notifs);
   });
 }
@@ -523,7 +530,8 @@ export function subscribePatientNotifications(
 ): Unsubscribe {
   const q = query(
     collection(db, COLLECTIONS.notifications),
-    where('targetUserIds', 'array-contains', userId)
+    where('targetUserIds', 'array-contains', userId),
+    limit(30),
   );
   return onSnapshot(q, (snap) => {
     const notifs = snap.docs
@@ -534,8 +542,7 @@ export function subscribePatientNotifications(
           createdAt: readDate(data.createdAt),
         } as GroupNotification;
       })
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, 30);
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     onUpdate(notifs);
   });
 }

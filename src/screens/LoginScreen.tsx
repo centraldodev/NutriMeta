@@ -37,6 +37,7 @@ export function LoginScreen({ onSuccess }: Props) {
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
   const [accountRole, setAccountRole] = useState<'user' | 'nutritionist'>('user');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading]   = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const setUser = useStore((s) => s.setUser);
@@ -215,16 +216,30 @@ export function LoginScreen({ onSuccess }: Props) {
             />
 
             <Text style={styles.label}>Senha</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="••••••••"
-              placeholderTextColor={Colors.gray400}
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              onSubmitEditing={handleSubmit}
-              returnKeyType="go"
-            />
+            <View style={styles.passwordWrap}>
+              <TextInput
+                style={styles.passwordInput}
+                placeholder="••••••••"
+                placeholderTextColor={Colors.gray400}
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry={!showPassword}
+                onSubmitEditing={handleSubmit}
+                returnKeyType="go"
+              />
+              <TouchableOpacity
+                style={styles.passwordToggle}
+                onPress={() => setShowPassword((v) => !v)}
+                accessibilityRole="button"
+                accessibilityLabel={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+              >
+                <MaterialIcons
+                  name={showPassword ? 'visibility-off' : 'visibility'}
+                  size={20}
+                  color={Colors.gray400}
+                />
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity
               style={styles.btnPrimary}
@@ -320,6 +335,26 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm, padding: Spacing.md,
     fontSize: Typography.base, color: Colors.gray800,
     marginBottom: Spacing.md,
+  },
+  passwordWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    marginBottom: Spacing.md,
+  },
+  passwordInput: {
+    flex: 1,
+    padding: Spacing.md,
+    fontSize: Typography.base,
+    color: Colors.gray800,
+  },
+  passwordToggle: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.md,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   roleRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.md },
   roleCard: {
