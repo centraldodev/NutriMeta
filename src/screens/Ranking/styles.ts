@@ -175,22 +175,6 @@ export const styles = StyleSheet.create({
 });
 
 export const modalStyles = StyleSheet.create({
-  bg: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(8, 80, 65, 0.2)' },
-  backdrop: { ...StyleSheet.absoluteFillObject },
-  sheet: {
-    width: '100%',
-    maxWidth: 720,
-    maxHeight: '92%',
-    alignSelf: 'center',
-    backgroundColor: Colors.white,
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    paddingTop: Spacing.sm,
-  },
-  handle: { width: 42, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: Spacing.sm },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm },
-  title: { fontSize: Typography.lg, fontWeight: Typography.bold, color: Colors.gray800 },
-  closeBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.gray50 },
   content: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.md },
   label: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.bold, textTransform: 'uppercase', letterSpacing: 0.4, marginTop: Spacing.sm, marginBottom: 6 },
   captionInput: {
@@ -228,18 +212,6 @@ export const modalStyles = StyleSheet.create({
   visibilityText: { fontSize: Typography.xs, color: Colors.gray400, fontWeight: Typography.bold },
   visibilityTextActive: { color: Colors.green600 },
   emptyFriendsText: { fontSize: Typography.sm, color: Colors.gray400, lineHeight: 18 },
-  tagSearchBox: {
-    minHeight: 42,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.white,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    paddingHorizontal: Spacing.sm,
-  },
-  tagSearchInput: { flex: 1, minHeight: 40, paddingVertical: 0, fontSize: Typography.sm, color: Colors.gray800 },
   tagResults: { marginTop: Spacing.xs, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden' },
   tagResultRow: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.sm, backgroundColor: Colors.white, borderBottomWidth: 1, borderBottomColor: Colors.border },
   tagAvatar: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green100 },
@@ -251,9 +223,4 @@ export const modalStyles = StyleSheet.create({
   taggedAvatarWrap: { width: 44, height: 44, position: 'relative' },
   taggedAvatar: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green100 },
   taggedRemoveBadge: { position: 'absolute', top: -3, right: -3, width: 18, height: 18, borderRadius: 9, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.danger, borderWidth: 2, borderColor: Colors.white },
-  actions: { flexDirection: 'row', gap: Spacing.sm, padding: Spacing.md, borderTopWidth: 1, borderTopColor: Colors.border },
-  cancelBtn: { flex: 1, minHeight: 44, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, alignItems: 'center', justifyContent: 'center' },
-  cancelText: { fontSize: Typography.sm, color: Colors.gray600, fontWeight: Typography.bold },
-  publishBtn: { flex: 1.4, minHeight: 44, borderRadius: Radius.md, backgroundColor: Colors.green400, alignItems: 'center', justifyContent: 'center' },
-  publishText: { fontSize: Typography.sm, color: Colors.white, fontWeight: Typography.bold },
 });

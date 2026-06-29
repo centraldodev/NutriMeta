@@ -215,24 +215,6 @@ export const styles = StyleSheet.create({
 });
 
 export const modalStyles = StyleSheet.create({
-  bg: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
-  sheet: {
-    maxHeight: '92%',
-    width: '100%',
-    maxWidth: Platform.OS === 'web' ? 720 : undefined,
-    alignSelf: 'center',
-    backgroundColor: Colors.white,
-    borderTopLeftRadius: Radius.xxl,
-    borderTopRightRadius: Radius.xxl,
-    padding: Spacing.base,
-    paddingBottom: Spacing.lg,
-  },
-  handle: { width: 40, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.base },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
-  title: { fontSize: Typography.xl, fontWeight: Typography.bold },
-  closeBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.gray50 },
-  closeText: { fontSize: Typography.xl, color: Colors.gray600, lineHeight: 24 },
   scroll: { paddingBottom: Spacing.base },
   photoRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.lg },
   photoButton: { width: 72, height: 72, borderRadius: 36, backgroundColor: Colors.green50, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: Colors.green100 },
@@ -272,11 +254,6 @@ export const modalStyles = StyleSheet.create({
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.sm },
   goalActionRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: Spacing.xs, flex: 1 },
   recalcBtn: { width: 40, height: 40, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.green50, borderWidth: 1, borderColor: Colors.green400 },
-  actions: { flexDirection: 'row', gap: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border },
-  cancelBtn: { flex: 1, alignItems: 'center', paddingVertical: Spacing.md, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
-  cancelText: { color: Colors.gray600, fontWeight: Typography.semibold },
-  saveBtn: { flex: 1.4, alignItems: 'center', paddingVertical: Spacing.md, borderRadius: Radius.md, backgroundColor: Colors.green400 },
-  saveText: { color: Colors.white, fontWeight: Typography.bold },
   helpCard: {
     maxHeight: '82%',
     maxWidth: Platform.OS === 'web' ? 620 : undefined,

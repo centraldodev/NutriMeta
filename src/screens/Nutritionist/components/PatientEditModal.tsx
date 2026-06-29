@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
   Alert,
-  Modal,
   ScrollView,
   Text,
   TextInput,
@@ -38,6 +37,8 @@ import {
   formatGoalInputs,
 } from "../utils/goalUtils";
 import { styles } from "../styles";
+import { BottomSheet } from "../../../components/BottomSheet";
+import { ModalActionBar } from "../../../components/ModalActionBar";
 
 export function NutritionistField({
   label,
@@ -173,22 +174,7 @@ export function PatientEditModal({
   }
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <View style={styles.modalBg}>
-        <TouchableOpacity style={styles.modalBackdrop} onPress={onClose} />
-        <View style={styles.modalSheet}>
-          <View style={styles.modalHandle} />
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Editar paciente</Text>
-            <TouchableOpacity style={styles.modalCloseBtn} onPress={onClose}>
-              <MaterialIcons name="close" size={20} color={Colors.gray600} />
-            </TouchableOpacity>
-          </View>
+    <BottomSheet visible={visible} onClose={onClose} title="Editar paciente">
           <ScrollView
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.modalScroll}
@@ -346,22 +332,12 @@ export function PatientEditModal({
               ))}
             </View>
           </ScrollView>
-          <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-              <Text style={styles.cancelText}>Cancelar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.saveBtn}
-              onPress={handleSave}
-              disabled={saving}
-            >
-              <Text style={styles.saveText}>
-                {saving ? "Salvando..." : "Salvar"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
+      <ModalActionBar
+        onCancel={onClose}
+        onConfirm={handleSave}
+        confirmLabel="Salvar"
+        loading={saving}
+      />
+    </BottomSheet>
   );
 }

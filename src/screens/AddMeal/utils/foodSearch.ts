@@ -1,4 +1,57 @@
-import { FoodItem, QuantityUnit } from "../../../types";
+import { FoodItem, FoodNutrition, QuantityUnit } from "../../../types";
+
+// Maps Portuguese nutrition keywords to FoodNutrition fields for category-based search
+const NUTRITION_CATEGORY_MAP: Record<string, keyof FoodNutrition> = {
+  proteina: 'protein',
+  proteinas: 'protein',
+  protein: 'protein',
+  carboidrato: 'carbs',
+  carboidratos: 'carbs',
+  carbo: 'carbs',
+  carbs: 'carbs',
+  gordura: 'fat',
+  gorduras: 'fat',
+  lipidio: 'fat',
+  lipidios: 'fat',
+  fibra: 'fiber',
+  fibras: 'fiber',
+  calcio: 'calcium',
+  ferro: 'iron',
+  sodio: 'sodium',
+  sal: 'sodium',
+  potassio: 'potassium',
+  magnesio: 'magnesium',
+  zinco: 'zinc',
+  acucar: 'sugar',
+  acucares: 'sugar',
+  vitamina: 'vitaminC', // fallback; refined below by multi-word
+  'vitamina c': 'vitaminC',
+  'vitamina d': 'vitaminD',
+  'vitamina a': 'vitaminA',
+  'vitamina b': 'vitaminB12',
+  'vitamina b12': 'vitaminB12',
+  folato: 'folate',
+  folicos: 'folate',
+};
+
+function detectNutritionCategory(normalized: string): (keyof FoodNutrition) | undefined {
+  if (NUTRITION_CATEGORY_MAP[normalized]) return NUTRITION_CATEGORY_MAP[normalized];
+  const words = new Set(normalized.split(/\s+/));
+  // Longest keys first so "vitamina b12" beats "vitamina b" and "vitamina"
+  const sortedKeys = Object.keys(NUTRITION_CATEGORY_MAP).sort((a, b) => b.length - a.length);
+  for (const key of sortedKeys) {
+    const keyWords = key.split(' ');
+    if (keyWords.every((kw) => words.has(kw))) return NUTRITION_CATEGORY_MAP[key];
+  }
+  return undefined;
+}
+
+function getNutrientValue(food: FoodItem, field: keyof FoodNutrition): number {
+  const nutrition = food.nutritionPer[food.defaultUnit];
+  if (!nutrition) return 0;
+  const value = nutrition[field];
+  return typeof value === 'number' ? value : 0;
+}
 
 export const FOOD_MATCH_STOP_WORDS = new Set([
   "com",
@@ -72,6 +125,26 @@ export const FOOD_COMPONENT_ALIASES: Record<string, string[]> = {
   catupiry: ["requeijao cremoso"],
 };
 
+function editDistance(a: string, b: string, maxDist: number): number {
+  if (Math.abs(a.length - b.length) > maxDist) return maxDist + 1;
+  if (a === b) return 0;
+  const n = b.length;
+  const dp = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    let rowMin = dp[0];
+    for (let j = 1; j <= n; j++) {
+      const temp = dp[j];
+      dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      prev = temp;
+      rowMin = Math.min(rowMin, dp[j]);
+    }
+    if (rowMin > maxDist) return maxDist + 1;
+  }
+  return dp[n];
+}
+
 export function normalizeFoodText(value: string) {
   return value
     .toLowerCase()
@@ -124,9 +197,19 @@ export function foodMatchScore(query: string, food: FoodItem): number {
     return 80 + Math.min(10, exactText.length / 4);
   }
 
+  const targetTokenArr = Array.from(targetTokens);
   let matches = 0;
   queryTokens.forEach((token) => {
-    if (targetTokens.has(token)) matches += 1;
+    if (targetTokens.has(token)) {
+      matches += 1;
+    } else if (token.length >= 4) {
+      // Fuzzy token match — tolerate 1 typo for short tokens, 2 for longer ones
+      const maxDist = token.length >= 7 ? 2 : 1;
+      const fuzzy = targetTokenArr.some(
+        (t) => editDistance(token, t, maxDist) <= maxDist,
+      );
+      if (fuzzy) matches += 0.6;
+    }
   });
 
   const coverage = matches / queryTokens.size;
@@ -271,6 +354,16 @@ export function searchFoods(query: string, customFoods: FoodItem[] = []): FoodIt
   if (!q) return customFoods;
   const normalized = normalizeFoodText(q);
 
+  // 0. Nutritional category search ("proteína", "rico em fibra", "vitamina c", etc.)
+  const categoryField = detectNutritionCategory(normalized);
+  if (categoryField) {
+    return customFoods
+      .filter((food) => getNutrientValue(food, categoryField) > 0)
+      .sort((a, b) => getNutrientValue(b, categoryField) - getNutrientValue(a, categoryField))
+      .slice(0, 15);
+  }
+
+  // 1. Direct name substring match (fastest)
   const directMatches = customFoods
     .filter((food) => normalizeFoodText(food.name).includes(normalized))
     .sort((a, b) => {
@@ -280,15 +373,41 @@ export function searchFoods(query: string, customFoods: FoodItem[] = []): FoodIt
       const bExact = bName === normalized ? 0 : 1;
       return aExact - bExact || a.name.length - b.name.length;
     });
-
   if (directMatches.length > 0) return directMatches;
 
-  const aliasMatches = (FOOD_COMPONENT_ALIASES[normalized] ?? [])
+  // 2. Alias substring match — catches "peito de frango", ingredient names, etc.
+  if (normalized.length >= 3) {
+    const aliasSubstringMatches = customFoods
+      .filter((food) =>
+        food.aliases.some((alias) => normalizeFoodText(alias).includes(normalized)),
+      )
+      .sort((a, b) => a.name.length - b.name.length)
+      .slice(0, 10);
+    if (aliasSubstringMatches.length > 0) return aliasSubstringMatches;
+  }
+
+  // 3. FOOD_COMPONENT_ALIASES (catupiry → requeijão, etc.)
+  const componentAliasMatches = (FOOD_COMPONENT_ALIASES[normalized] ?? [])
     .map((alias) => findCompositePartFood(alias, customFoods))
     .filter((food): food is FoodItem => Boolean(food));
-  if (aliasMatches.length > 0) return aliasMatches;
+  if (componentAliasMatches.length > 0) return componentAliasMatches;
 
-  return findCompositeFoods(q, customFoods);
+  // 4. Composite queries: "arroz e feijão", "frango com batata"
+  const compositeMatches = findCompositeFoods(q, customFoods);
+  if (compositeMatches.length > 0) return compositeMatches;
+
+  // 5. Fuzzy scoring — handles typos ("frago" → "frango", "fijeoada" → "feijoada")
+  if (normalized.length >= 3) {
+    const fuzzyResults = customFoods
+      .map((food) => ({ food, score: foodMatchScore(q, food) }))
+      .filter((item) => item.score >= 18)
+      .sort((a, b) => b.score - a.score || a.food.name.length - b.food.name.length)
+      .slice(0, 8)
+      .map((item) => item.food);
+    if (fuzzyResults.length > 0) return fuzzyResults;
+  }
+
+  return [];
 }
 
 export function isWaterFood(food: Pick<FoodItem, "name" | "aliases"> | null): boolean {

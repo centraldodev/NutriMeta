@@ -21,13 +21,15 @@ import { FoodNutrition, FoodPlan, FoodPlanMeal, MacroGoals, MealEntry, Nutrition
 
 import { RingChart, RING_SIZE } from './components/RingChart';
 import { NutritionGoalTable } from './components/NutritionGoalTable';
-import { FoodPlanCard, makeFoodPlanMealKey, makeLegacyFoodPlanMealKey } from './components/FoodPlanCard';
+import { FoodPlanCard, makeFoodPlanMealKey, makeLegacyFoodPlanMealKey, PlanMeal } from './components/FoodPlanCard';
 import { SettingsModal } from './components/SettingsModal';
 import { NotificationsModal } from './components/NotificationsModal';
 import { ChatsModal } from './components/ChatsModal';
 import { WaterModal } from './components/WaterModal';
 import { DEFAULT_GOALS, NutritionGoalRow } from './types';
 import { styles } from './styles';
+
+const MEAL_PERIOD_ORDER = ['breakfast', 'snack', 'lunch', 'dinner', 'hydration'];
 
 export function HomeScreen() {
   const user = useStore((s) => s.user);
@@ -159,7 +161,22 @@ export function HomeScreen() {
   const firstName = (profile?.name ?? user?.name ?? 'Usuário').split(' ')[0];
 
   const unreadChatTotal = Object.values(unreadChatCounts).reduce((sum, count) => sum + count, 0);
-  const latestFoodPlan = foodPlans[0] ?? null;
+  const primaryPlan = foodPlans[0] ?? null;
+
+  const allPlanMeals = useMemo<PlanMeal[]>(() => {
+    return foodPlans
+      .flatMap((plan) =>
+        plan.meals.map((meal, mealIndex) => ({ plan, meal, mealIndex })),
+      )
+      .sort((a, b) => {
+        const timeA = a.meal.time ?? '';
+        const timeB = b.meal.time ?? '';
+        if (timeA && timeB) return timeA.localeCompare(timeB);
+        if (timeA) return -1;
+        if (timeB) return 1;
+        return MEAL_PERIOD_ORDER.indexOf(a.meal.period) - MEAL_PERIOD_ORDER.indexOf(b.meal.period);
+      });
+  }, [foodPlans]);
 
   const today = formatBrasiliaDate(new Date(), {
     weekday: 'long',
@@ -213,7 +230,7 @@ export function HomeScreen() {
 
   function openShoppingList() {
     setHeaderMenuOpen(false);
-    if (!latestFoodPlan) {
+    if (!primaryPlan) {
       Alert.alert('Sem plano alimentar', 'Você ainda não tem um plano alimentar para gerar a lista de compras.');
       return;
     }
@@ -378,9 +395,12 @@ export function HomeScreen() {
         </View>
 
         {/* 2. Plano alimentar (só quando existir) */}
-        {latestFoodPlan ? (
+        {allPlanMeals.length > 0 && primaryPlan ? (
           <FoodPlanCard
-            plan={latestFoodPlan}
+            meals={allPlanMeals}
+            planTitle={primaryPlan.title}
+            planNotes={primaryPlan.notes}
+            nutritionistName={primaryPlan.nutritionistName}
             completingMealKey={completingMealKey}
             onCompleteMeal={handleCompleteFoodPlanMeal}
             onOpenShoppingPdf={() => setShoppingPdfOpen(true)}
@@ -402,7 +422,7 @@ export function HomeScreen() {
       <NutritionDataHelpModal visible={helpOpen} onClose={() => setHelpOpen(false)} />
       <ShoppingPdfModal
         visible={shoppingPdfOpen}
-        plan={latestFoodPlan}
+        plan={primaryPlan}
         plans={foodPlans}
         onClose={() => setShoppingPdfOpen(false)}
       />

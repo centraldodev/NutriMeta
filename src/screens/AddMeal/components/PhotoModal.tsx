@@ -5,14 +5,14 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  Modal,
   Alert,
   ActivityIndicator,
   Image,
+  StyleSheet,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { MaterialIcons } from "@expo/vector-icons";
-import { Colors } from "../../../constants/theme";
+import { Colors, Radius, Spacing, Typography } from "../../../constants/theme";
 import { calculateNutrition, UNIT_LABELS } from "../../../constants/foodDatabase";
 import { FoodItem, MealPeriod, QuantityUnit } from "../../../types";
 import { formatNutritionDetails } from "../../../utils/nutrition";
@@ -29,8 +29,104 @@ import {
   emptyNutrition,
 } from "../utils/mealUtils";
 import { compatibleDetectedUnit } from "../utils/voiceParser";
-import { modal, voiceModal, photoModal } from "../styles";
-import { MealPeriodPicker } from "./AddMealModal";
+import { modal, voiceModal } from "../modalStyles";
+import { MealPeriodPicker } from "./MealPeriodPicker";
+import { BottomSheet } from "../../../components/BottomSheet";
+import { ModalActionBar } from "../../../components/ModalActionBar";
+
+const photoModal = StyleSheet.create({
+  photoActions: {
+    flexDirection: "row",
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  photoButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: Colors.green400,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.green50,
+    paddingVertical: Spacing.md,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: Spacing.xs,
+  },
+  photoButtonText: {
+    color: Colors.green600,
+    fontSize: Typography.sm,
+    fontWeight: Typography.bold,
+  },
+  previewImage: {
+    width: "100%",
+    height: 170,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.gray50,
+    marginBottom: Spacing.sm,
+  },
+  emptyImage: {
+    height: 150,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.gray50,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  emptyImageText: {
+    marginTop: Spacing.xs,
+    fontSize: Typography.sm,
+    color: Colors.gray400,
+    textAlign: "center",
+  },
+  loadingBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    backgroundColor: Colors.green50,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  loadingText: {
+    fontSize: Typography.sm,
+    color: Colors.green600,
+    fontWeight: Typography.semibold,
+  },
+  summary: {
+    fontSize: Typography.sm,
+    color: Colors.gray600,
+    backgroundColor: Colors.gray50,
+    borderRadius: Radius.sm,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  captionBox: {
+    backgroundColor: Colors.white,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  captionLabel: {
+    fontSize: Typography.xs,
+    color: Colors.gray400,
+    fontWeight: Typography.bold,
+    textTransform: "uppercase",
+    marginBottom: Spacing.xs,
+  },
+  captionInput: {
+    minHeight: 58,
+    fontSize: Typography.sm,
+    color: Colors.gray800,
+    lineHeight: 19,
+    textAlignVertical: "top",
+  },
+});
 
 // ─── Photo Modal ──────────────────────────────────────────────────────────────
 
@@ -326,29 +422,18 @@ export function PhotoModal({
   }
 
   return (
-    <Modal
+    <BottomSheet
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <View style={modal.bg}>
-        <TouchableOpacity style={modal.backdrop} onPress={onClose} />
-        <View style={modal.sheet}>
-          <View style={modal.handle} />
-          <View style={modal.modalHeader}>
-            <View>
-              <Text style={modal.title}>Foto do prato</Text>
-              <Text style={modal.subtitle}>
-                {addedCount > 0
-                  ? `${addedCount} alimento(s) adicionados hoje`
-                  : "A IA identifica e você confere antes de salvar."}
-              </Text>
-            </View>
-            <TouchableOpacity style={modal.closePill} onPress={onClose}>
-              <Text style={modal.closePillText}>Concluir</Text>
-            </TouchableOpacity>
-          </View>
+      onClose={onClose}
+      title="Foto do prato"
+      subtitle={
+        addedCount > 0
+          ? `${addedCount} alimento(s) adicionados hoje`
+          : "A IA identifica e você confere antes de salvar."
+      }
+      closeType="pill"
+      closeLabel="Concluir"
+      fillHeight>
 
           <ScrollView
             style={modal.body}
@@ -564,28 +649,18 @@ export function PhotoModal({
             </View>
           </ScrollView>
 
-          <View style={modal.actions}>
-            <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
-              <Text style={modal.btnCancelText}>Fechar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[modal.btnAdd, !canConfirm && modal.btnDisabled]}
-              onPress={confirm}
-              disabled={!canConfirm}
-            >
-              {confirming ? (
-                <ActivityIndicator color={Colors.white} />
-              ) : (
-                <Text style={modal.btnAddText}>
-                  {editableDrafts.length === 0 && canConfirmPhotoOnly
-                    ? "Publicar foto"
-                    : "Adicionar e continuar"}
-                </Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
+      <ModalActionBar
+        onCancel={onClose}
+        onConfirm={confirm}
+        cancelLabel="Fechar"
+        confirmLabel={
+          editableDrafts.length === 0 && canConfirmPhotoOnly
+            ? "Publicar foto"
+            : "Adicionar e continuar"
+        }
+        loading={confirming}
+        disabled={!canConfirm}
+      />
+    </BottomSheet>
   );
 }

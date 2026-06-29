@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Modal,
   Platform,
   ScrollView,
   Text,
@@ -30,6 +29,7 @@ import { getCustomFoods } from "../../../services/customFoodService";
 import { FoodIcon } from "../../../components/FoodIcon";
 import { NativeTimePicker } from "../../../components/NativeTimePicker";
 import {
+  EMPTY_TOTAL,
   MEAL_PERIOD_OPTIONS,
   PERIOD_LABELS,
   PLAN_NUTRITION_ROWS,
@@ -37,15 +37,13 @@ import {
   PlanSelectedFood,
 } from "../types";
 import {
-  buildShoppingListFromOptions,
+  buildShoppingListFromMeals,
   getFoodUnits,
   normalizeFoodSearchText,
-  optionDraftsFromPlan,
   parseOptionalPlanQuantity,
   planItemsFromSelectedFoods,
   recalcPlanFood,
   searchPlanFoods,
-  selectedFoodsFromPlan,
 } from "../utils/foodPlan";
 import {
   formatPlanNutritionValue,
@@ -54,6 +52,9 @@ import {
 } from "../utils/goalUtils";
 import { styles } from "../styles";
 import { NutritionistField } from "./PatientEditModal";
+import { BottomSheet } from "../../../components/BottomSheet";
+import { ModalActionBar } from "../../../components/ModalActionBar";
+import { SearchInput } from "../../../components/SearchInput";
 
 function PlanNutritionChips({ nutrition }: { nutrition: FoodNutrition }) {
   const rows = PLAN_NUTRITION_ROWS.map((item) => ({
@@ -114,23 +115,22 @@ export function FoodPlanModal({
   const [selectedFoods, setSelectedFoods] = useState<PlanSelectedFood[]>([]);
   const [substitutions, setSubstitutions] = useState<PlanMealOptionDraft[]>([]);
   const [timePickerOpen, setTimePickerOpen] = useState(false);
+  const [committedMeals, setCommittedMeals] = useState<FoodPlanMeal[]>([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
-    const meal = initialPlan?.meals[0];
     setTitle(initialPlan?.title ?? "");
     setNotes(initialPlan?.notes ?? "");
-    setMealPeriod(meal?.period ?? "breakfast");
-    setMealTime(meal?.time ?? "");
+    setMealPeriod("breakfast");
+    setMealTime("");
     setFoodQuery("");
     setActiveOptionId("main");
-    setSelectedFoods(
-      initialPlan ? selectedFoodsFromPlan(initialPlan, foods) : [],
-    );
-    setSubstitutions(optionDraftsFromPlan(initialPlan, foods));
+    setSelectedFoods([]);
+    setSubstitutions([]);
+    setCommittedMeals(initialPlan?.meals ?? []);
     setTimePickerOpen(false);
-  }, [foods, initialPlan, visible]);
+  }, [initialPlan, visible]);
 
   useEffect(() => {
     let active = true;
@@ -271,64 +271,61 @@ export function FoodPlanModal({
     setMealTime(formatBrasiliaTime(date));
   }
 
-  function buildMealsForPlan(): FoodPlanMeal[] | null {
-    if (!patient) return null;
-    if (!title.trim() || selectedFoods.length === 0) {
-      Alert.alert(
-        "Plano incompleto",
-        "Informe o título do plano e adicione ao menos um alimento.",
-      );
-      return null;
+  function handleCommitMeal() {
+    if (selectedFoods.length === 0) {
+      Alert.alert("Adicione alimentos", "Adicione ao menos um alimento antes de confirmar a refeição.");
+      return;
     }
     if (
-      [selectedFoods, ...substitutions.map((option) => option.selectedFoods)]
+      [selectedFoods, ...substitutions.map((o) => o.selectedFoods)]
         .flat()
-        .some(
-        (item) => !item.quantityText.trim() || item.quantity <= 0,
-      )
+        .some((item) => !item.quantityText.trim() || item.quantity <= 0)
     ) {
-      Alert.alert(
-        "Quantidade inválida",
-        "Informe uma quantidade maior que zero para todos os alimentos.",
-      );
-      return null;
+      Alert.alert("Quantidade inválida", "Informe uma quantidade maior que zero para todos os alimentos.");
+      return;
     }
     if (!isValidMealTime(mealTime)) {
-      Alert.alert(
-        "Horário inválido",
-        "Informe o horário no formato HH:mm, por exemplo 07:30.",
-      );
-      return null;
+      Alert.alert("Horário inválido", "Informe o horário no formato HH:mm, por exemplo 07:30.");
+      return;
     }
-    const validSubstitutions = substitutions.filter(
-      (option) => option.selectedFoods.length > 0,
-    );
-    const items = planItemsFromSelectedFoods(selectedFoods);
-    return [
-      {
-        period: mealPeriod,
-        title: PERIOD_LABELS[mealPeriod] ?? title.trim(),
-        time: mealTime.trim() || undefined,
-        instructions: notes.trim() || undefined,
-        items,
-        totalNutrition: planTotal,
-        substitutions: validSubstitutions.map((option, index) => ({
-          id: option.id,
-          title: option.title.trim() || `Substituição ${index + 1}`,
-          items: planItemsFromSelectedFoods(option.selectedFoods),
-          totalNutrition: sumNutrition(
-            option.selectedFoods.map((item) => ({ nutrition: item.nutrition })),
-          ),
-        })),
-      },
-    ];
+    const validSubstitutions = substitutions.filter((o) => o.selectedFoods.length > 0);
+    const newMeal: FoodPlanMeal = {
+      period: mealPeriod,
+      title: PERIOD_LABELS[mealPeriod] ?? mealPeriod,
+      time: mealTime.trim() || undefined,
+      items: planItemsFromSelectedFoods(selectedFoods),
+      totalNutrition: planTotal,
+      substitutions: validSubstitutions.map((option, index) => ({
+        id: option.id,
+        title: option.title.trim() || `Substituição ${index + 1}`,
+        items: planItemsFromSelectedFoods(option.selectedFoods),
+        totalNutrition: sumNutrition(
+          option.selectedFoods.map((item) => ({ nutrition: item.nutrition })),
+        ),
+      })),
+    };
+    setCommittedMeals((prev) => [...prev, newMeal]);
+    setMealPeriod("breakfast");
+    setMealTime("");
+    setSelectedFoods([]);
+    setSubstitutions([]);
+    setFoodQuery("");
+    setActiveOptionId("main");
   }
 
   async function handleCreate() {
     if (!patient || !nutritionist) return;
-    const meals = buildMealsForPlan();
-    if (!meals) return;
-
+    if (!title.trim()) {
+      Alert.alert("Título obrigatório", "Informe o título do plano.");
+      return;
+    }
+    if (committedMeals.length === 0) {
+      Alert.alert("Adicione refeições", "Adicione ao menos uma refeição antes de salvar o plano.");
+      return;
+    }
+    const totalNutrition = sumNutrition(
+      committedMeals.map((m) => ({ nutrition: m.totalNutrition ?? EMPTY_TOTAL })),
+    );
     setSaving(true);
     try {
       const payload = {
@@ -337,12 +334,9 @@ export function FoodPlanModal({
         nutritionistName: nutritionist.name,
         title: title.trim(),
         notes: notes.trim() || undefined,
-        meals,
-        shoppingList: buildShoppingListFromOptions([
-          { id: "main", title: "Opção principal", selectedFoods },
-          ...substitutions.filter((option) => option.selectedFoods.length > 0),
-        ]),
-        totalNutrition: planTotal,
+        meals: committedMeals,
+        shoppingList: buildShoppingListFromMeals(committedMeals),
+        totalNutrition,
       };
       await onSave(
         initialPlan
@@ -356,24 +350,10 @@ export function FoodPlanModal({
   }
 
   return (
-    <Modal
+    <BottomSheet
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <View style={styles.modalBg}>
-        <TouchableOpacity style={styles.modalBackdrop} onPress={onClose} />
-        <View style={styles.modalSheet}>
-          <View style={styles.modalHandle} />
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>
-              {initialPlan ? "Editar plano alimentar" : "Novo plano alimentar"}
-            </Text>
-            <TouchableOpacity style={styles.modalCloseBtn} onPress={onClose}>
-              <MaterialIcons name="close" size={20} color={Colors.gray600} />
-            </TouchableOpacity>
-          </View>
+      onClose={onClose}
+      title={initialPlan ? "Editar plano alimentar" : "Novo plano alimentar"}>
           <ScrollView
             style={styles.modalBodyScroll}
             showsVerticalScrollIndicator={false}
@@ -395,7 +375,38 @@ export function FoodPlanModal({
               wide
             />
 
-            <Text style={styles.fieldLabel}>Refeição</Text>
+            {committedMeals.length > 0 ? (
+              <View style={styles.committedMealsSection}>
+                <View style={styles.committedMealsSectionHeader}>
+                  <Text style={styles.committedMealsSectionLabel}>
+                    Refeições do plano ({committedMeals.length})
+                  </Text>
+                </View>
+                {committedMeals.map((cMeal, i) => (
+                  <View key={i} style={styles.committedMealRow}>
+                    <View style={styles.committedMealInfo}>
+                      <Text style={styles.committedMealTitle}>
+                        {cMeal.time ? `${cMeal.time} · ${cMeal.title}` : cMeal.title}
+                      </Text>
+                      <Text style={styles.committedMealMeta}>
+                        {cMeal.items.length} alimento{cMeal.items.length !== 1 ? 's' : ''}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setCommittedMeals((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      <MaterialIcons name="delete-outline" size={20} color={Colors.danger} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            <Text style={styles.committedMealFormLabel}>
+              {committedMeals.length === 0 ? 'Primeira refeição' : 'Nova refeição'}
+            </Text>
+
+            <Text style={styles.fieldLabel}>Período</Text>
             <View style={styles.segmentWrap}>
               {MEAL_PERIOD_OPTIONS.map((period) => (
                 <TouchableOpacity
@@ -545,16 +556,11 @@ export function FoodPlanModal({
 
             <View style={styles.planFoodSearchPanel}>
               <Text style={styles.fieldLabel}>Adicionar alimento</Text>
-              <View style={styles.searchRow}>
-                <MaterialIcons name="search" size={18} color={Colors.gray400} />
-                <TextInput
-                  style={styles.searchInput}
-                  value={foodQuery}
-                  onChangeText={setFoodQuery}
-                  placeholder="Buscar alimento da base"
-                  placeholderTextColor={Colors.gray400}
-                />
-              </View>
+              <SearchInput
+                value={foodQuery}
+                onChangeText={setFoodQuery}
+                placeholder="Buscar alimento da base"
+              />
               {loadingFoods ? (
                 <ActivityIndicator color={Colors.green400} />
               ) : suggestions.length === 0 ? (
@@ -696,26 +702,30 @@ export function FoodPlanModal({
               </ScrollView>
             )}
           </View>
-          <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-              <Text style={styles.cancelText}>Cancelar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.saveBtn}
-              onPress={handleCreate}
-              disabled={saving}
-            >
-              <Text style={styles.saveText}>
-                {saving
-                  ? "Salvando..."
-                  : initialPlan
-                    ? "Salvar alterações"
-                    : "Criar plano"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
+          <TouchableOpacity
+            style={[
+              styles.addMealToPlanBtn,
+              selectedFoods.length === 0 && styles.addMealToPlanBtnDisabled,
+            ]}
+            onPress={handleCommitMeal}
+            disabled={selectedFoods.length === 0}
+          >
+            <MaterialIcons
+              name="add-circle-outline"
+              size={18}
+              color={Colors.white}
+            />
+            <Text style={styles.addMealToPlanBtnText}>
+              Adicionar refeição ao plano
+            </Text>
+          </TouchableOpacity>
+      <ModalActionBar
+        onCancel={onClose}
+        onConfirm={handleCreate}
+        confirmLabel={initialPlan ? "Salvar alterações" : "Criar plano"}
+        loading={saving}
+        disabled={committedMeals.length === 0}
+      />
+    </BottomSheet>
   );
 }

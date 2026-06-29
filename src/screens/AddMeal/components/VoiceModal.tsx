@@ -5,9 +5,7 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  Modal,
   Alert,
-  ActivityIndicator,
 } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
 import { Colors } from "../../../constants/theme";
@@ -25,8 +23,10 @@ import {
   getDefaultMealPeriod,
 } from "../utils/mealUtils";
 import { parseVoiceMeal, compatibleDetectedUnit } from "../utils/voiceParser";
-import { modal, voiceModal } from "../styles";
-import { MealPeriodPicker } from "./AddMealModal";
+import { modal, voiceModal } from "../modalStyles";
+import { MealPeriodPicker } from "./MealPeriodPicker";
+import { BottomSheet } from "../../../components/BottomSheet";
+import { ModalActionBar } from "../../../components/ModalActionBar";
 
 // ─── Voice Modal ──────────────────────────────────────────────────────────────
 
@@ -252,29 +252,18 @@ function VoiceModal({
   }
 
   return (
-    <Modal
+    <BottomSheet
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <View style={modal.bg}>
-        <TouchableOpacity style={modal.backdrop} onPress={onClose} />
-        <View style={modal.sheet}>
-          <View style={modal.handle} />
-          <View style={modal.modalHeader}>
-            <View>
-              <Text style={modal.title}>Fale o que você comeu</Text>
-              <Text style={modal.subtitle}>
-                {addedCount > 0
-                  ? `${addedCount} alimento(s) adicionados hoje`
-                  : "Diga vários alimentos na mesma frase."}
-              </Text>
-            </View>
-            <TouchableOpacity style={modal.closePill} onPress={onClose}>
-              <Text style={modal.closePillText}>Concluir</Text>
-            </TouchableOpacity>
-          </View>
+      onClose={onClose}
+      title="Fale o que você comeu"
+      subtitle={
+        addedCount > 0
+          ? `${addedCount} alimento(s) adicionados hoje`
+          : "Diga vários alimentos na mesma frase."
+      }
+      closeType="pill"
+      closeLabel="Concluir"
+      fillHeight>
 
           <ScrollView
             style={modal.body}
@@ -448,33 +437,15 @@ function VoiceModal({
             </Text>
           </ScrollView>
 
-          <View style={modal.actions}>
-            <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
-              <Text style={modal.btnCancelText}>Fechar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                modal.btnAdd,
-                (editableDrafts.length === 0 ||
-                  hasInvalidDraft ||
-                  confirming) &&
-                  modal.btnDisabled,
-              ]}
-              onPress={confirm}
-              disabled={
-                editableDrafts.length === 0 || hasInvalidDraft || confirming
-              }
-            >
-              {confirming ? (
-                <ActivityIndicator color={Colors.white} />
-              ) : (
-                <Text style={modal.btnAddText}>Adicionar e continuar</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
+      <ModalActionBar
+        onCancel={onClose}
+        onConfirm={confirm}
+        cancelLabel="Fechar"
+        confirmLabel="Adicionar e continuar"
+        loading={confirming}
+        disabled={editableDrafts.length === 0 || hasInvalidDraft}
+      />
+    </BottomSheet>
   );
 }
 

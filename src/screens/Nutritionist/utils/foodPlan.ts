@@ -2,6 +2,7 @@ import {
   FoodItem,
   FoodNutrition,
   FoodPlan,
+  FoodPlanMeal,
   FoodPlanMealItem,
   QuantityUnit,
   ShoppingListItem,
@@ -69,6 +70,16 @@ export function buildShoppingListFromOptions(
   options: PlanMealOptionDraft[],
 ): ShoppingListItem[] {
   return options.flatMap((option) => buildShoppingList(option.selectedFoods));
+}
+
+export function buildShoppingListFromMeals(meals: FoodPlanMeal[]): ShoppingListItem[] {
+  return meals.flatMap((meal) =>
+    meal.items.map((item) => ({
+      name: item.name,
+      quantity: item.quantityValue != null ? String(item.quantityValue) : item.quantity.split(' ')[0] || '1',
+      unit: item.unit ? UNIT_LABELS[item.unit] : item.quantity.split(' ').slice(1).join(' ') || '',
+    })),
+  );
 }
 
 export function planItemsFromSelectedFoods(

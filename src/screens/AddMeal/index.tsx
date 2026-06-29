@@ -31,7 +31,7 @@ import {
   getCustomFoods,
   saveCustomFood,
 } from "../../services/customFoodService";
-import { DailyLog, FoodItem, MealEntry, MealPeriod, QuantityUnit } from "../../types";
+import { DailyLog, FoodItem, MealEntry, MealPeriod, QuantityUnit, SavedMeal } from "../../types";
 import {
   dateDaysAgoBrasilia,
   formatDate,
@@ -40,7 +40,7 @@ import {
 } from "../../utils/nutrition";
 import { isFirebaseConfigured } from "../../config";
 import { FoodIcon } from "../../components/FoodIcon";
-import { MealDraft, MEAL_PERIODS, MEAL_PERIOD_LABELS, MealEntryPayload } from "./types";
+import { MealDraft, ManualMealSelection, MEAL_PERIODS, MEAL_PERIOD_LABELS } from "./types";
 import { findExactFood } from "./utils/foodSearch";
 import {
   mergeDailyLogs,
@@ -86,6 +86,8 @@ export function AddMealScreen({
   const addEntryFn = useStore((s) => s.addEntry);
 
   const [addModal, setAddModal] = useState(false);
+  const [addModalInitialFoods, setAddModalInitialFoods] = useState<ManualMealSelection[]>([]);
+  const [addModalSavedMealId, setAddModalSavedMealId] = useState<string | null>(null);
   const [photoModal, setPhotoModal] = useState(false);
   const [customFoods, setCustomFoods] = useState<FoodItem[]>([]);
   const [recentLogs, setRecentLogs] = useState<DailyLog[]>([]);
@@ -144,6 +146,8 @@ export function AddMealScreen({
 
   function openManualMeal() {
     closeActionMenu();
+    setAddModalInitialFoods([]);
+    setAddModalSavedMealId(null);
     setAddModal(true);
   }
 
@@ -416,52 +420,38 @@ export function AddMealScreen({
     handleMealAdded();
   }
 
-  async function quickAdd(mealId: string) {
-    if (!user || !goals) return;
+  function quickAdd(mealId: string) {
     const meal = savedMeals.find((m) => m.id === mealId);
     if (!meal) return;
-    if (isFirebaseConfigured && user.id !== "dev_user") {
-      try {
-        await incrementMealUsage(mealId);
-      } catch (error) {
-        console.warn("Failed to increment saved meal usage", error);
-      }
-    }
-    let queuedCount = 0;
-    let firstQueueError: unknown = null;
-    const mealGroupId = createMealGroupId("saved");
-    for (const e of meal.entries) {
-      const period = e.mealPeriod ?? getDefaultMealPeriod();
-      const payload = {
-        ...e,
-        mealPeriod: period,
-        mealGroupId,
-        mealGroupLabel: MEAL_PERIOD_LABELS[period],
-        source: "saved",
-        savedMealId: mealId,
-      } satisfies MealEntryPayload;
-      const result =
-        isFirebaseConfigured && user.id !== "dev_user"
-          ? await saveMealEntryOrQueue({ userId: user.id, goals, payload })
-          : {
-              entry: createLocalEntry(user.id, payload),
-              queued: false,
-              error: undefined,
-            };
-      if (result.queued) {
-        queuedCount += 1;
-        firstQueueError ??= result.error;
-      }
-      addEntryFn(result.entry);
-    }
-    if (queuedCount > 0) {
-      console.warn(
-        "Saved meal queued for Firebase sync",
-        queuedCount,
-        firebaseErrorMessage(firstQueueError),
+    const initialFoods = savedMealToSelections(meal, customFoods);
+    setAddModalInitialFoods(initialFoods);
+    setAddModalSavedMealId(mealId);
+    setAddModal(true);
+  }
+
+  function savedMealToSelections(meal: SavedMeal, foods: FoodItem[]): ManualMealSelection[] {
+    return meal.entries.map((entry, index) => {
+      const unit = entry.unit;
+      const existingFood = foods.find(
+        (f) => f.name.toLowerCase() === entry.foodName.toLowerCase(),
       );
-    }
-    handleMealAdded();
+      const food: FoodItem = existingFood ?? {
+        id: `saved_${meal.id}_${index}`,
+        name: entry.foodName,
+        emoji: entry.emoji,
+        aliases: [entry.foodName.toLowerCase()],
+        defaultUnit: unit,
+        nutritionPer: { [unit]: entry.nutrition },
+      };
+      return {
+        key: `${food.id}_saved_${index}`,
+        food,
+        quantityText: String(entry.quantity).replace(".", ","),
+        quantity: entry.quantity,
+        unit,
+        nutrition: entry.nutrition,
+      };
+    });
   }
 
   async function handleDeleteEntry(entry: MealEntry) {
@@ -855,10 +845,24 @@ export function AddMealScreen({
 
       <AddMealModal
         visible={addModal}
-        onClose={() => setAddModal(false)}
-        onAdded={handleMealAdded}
+        onClose={() => {
+          setAddModal(false);
+          setAddModalInitialFoods([]);
+          setAddModalSavedMealId(null);
+        }}
+        onAdded={async (entry) => {
+          if (addModalSavedMealId && isFirebaseConfigured && user && user.id !== 'dev_user') {
+            incrementMealUsage(addModalSavedMealId).catch((err) => {
+              console.warn('Failed to increment saved meal usage', err);
+            });
+          }
+          setAddModalInitialFoods([]);
+          setAddModalSavedMealId(null);
+          handleMealAdded();
+        }}
         customFoods={customFoods}
         onCreateFood={handleCreateFood}
+        initialFoods={addModalInitialFoods.length > 0 ? addModalInitialFoods : undefined}
       />
       <PhotoModal
         visible={photoModal}

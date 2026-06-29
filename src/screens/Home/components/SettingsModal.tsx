@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert,
   Image,
-  Modal,
   Platform,
   ScrollView,
   Text,
@@ -39,6 +38,8 @@ import {
 import { DEFAULT_GOALS, EDITABLE_GOAL_ROWS, EditableGoalKey } from '../types';
 import { buildGoalsFromInputs, formatGoalInputs } from '../utils/goalUtils';
 import { modalStyles } from '../styles';
+import { BottomSheet } from '../../../components/BottomSheet';
+import { ModalActionBar } from '../../../components/ModalActionBar';
 
 function Field({
   label,
@@ -208,17 +209,7 @@ export function SettingsModal({ visible, onClose }: { visible: boolean; onClose:
   }
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={modalStyles.bg}>
-        <TouchableOpacity style={modalStyles.backdrop} onPress={onClose} />
-        <View style={modalStyles.sheet}>
-          <View style={modalStyles.handle} />
-          <View style={modalStyles.header}>
-            <Text style={modalStyles.title}>Configurações</Text>
-            <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn}>
-              <MaterialIcons name="close" size={20} color={Colors.gray600} />
-            </TouchableOpacity>
-          </View>
+    <BottomSheet visible={visible} onClose={onClose} title="Configurações">
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={modalStyles.scroll}>
             <View style={modalStyles.photoRow}>
@@ -395,16 +386,12 @@ export function SettingsModal({ visible, onClose }: { visible: boolean; onClose:
             </View>
           </ScrollView>
 
-          <View style={modalStyles.actions}>
-            <TouchableOpacity style={modalStyles.cancelBtn} onPress={onClose}>
-              <Text style={modalStyles.cancelText}>Cancelar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={modalStyles.saveBtn} onPress={handleSave} disabled={saving}>
-              <Text style={modalStyles.saveText}>{saving ? 'Salvando...' : 'Salvar'}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
+      <ModalActionBar
+        onCancel={onClose}
+        onConfirm={handleSave}
+        confirmLabel="Salvar"
+        loading={saving}
+      />
+    </BottomSheet>
   );
 }

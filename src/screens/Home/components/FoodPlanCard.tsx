@@ -16,8 +16,17 @@ function makeLegacyFoodPlanMealKey(planId: string, meal: FoodPlanMeal) {
 
 export { makeFoodPlanMealKey, makeLegacyFoodPlanMealKey };
 
+export type PlanMeal = {
+  plan: FoodPlan;
+  meal: FoodPlanMeal;
+  mealIndex: number;
+};
+
 export function FoodPlanCard({
-  plan,
+  meals,
+  planTitle,
+  planNotes,
+  nutritionistName,
   completingMealKey,
   onCompleteMeal,
   onOpenShoppingPdf,
@@ -29,7 +38,10 @@ export function FoodPlanCard({
   onToggleOptions,
   onSkipMeal,
 }: {
-  plan: FoodPlan;
+  meals: PlanMeal[];
+  planTitle: string;
+  planNotes?: string;
+  nutritionistName: string;
   completingMealKey?: string | null;
   onCompleteMeal: (plan: FoodPlan, meal: FoodPlanMeal, mealIndex: number) => void;
   onOpenShoppingPdf: () => void;
@@ -41,10 +53,11 @@ export function FoodPlanCard({
   onToggleOptions: (mealKey: string) => void;
   onSkipMeal: (mealKey: string) => void;
 }) {
-  const plannedMeals = plan.meals.map((meal, index) => ({
+  const plannedMeals = meals.map(({ plan, meal, mealIndex }) => ({
+    plan,
     meal,
-    index,
-    key: makeFoodPlanMealKey(plan.id, meal, index),
+    index: mealIndex,
+    key: makeFoodPlanMealKey(plan.id, meal, mealIndex),
     legacyKey: makeLegacyFoodPlanMealKey(plan.id, meal),
   }));
   const legacyKeyCounts = plannedMeals.reduce<Record<string, number>>((counts, item) => {
@@ -87,11 +100,11 @@ export function FoodPlanCard({
       <View style={styles.foodPlanHeader}>
         <View>
           <Text style={styles.foodPlanEyebrow}>Plano alimentar</Text>
-          <Text style={styles.foodPlanTitle}>{plan.title}</Text>
+          <Text style={styles.foodPlanTitle}>{planTitle}</Text>
         </View>
-        <Text style={styles.foodPlanAuthor}>{plan.nutritionistName}</Text>
+        <Text style={styles.foodPlanAuthor}>{nutritionistName}</Text>
       </View>
-      {plan.notes ? <Text style={styles.foodPlanNotes}>{plan.notes}</Text> : null}
+      {planNotes ? <Text style={styles.foodPlanNotes}>{planNotes}</Text> : null}
       {visibleMeals.length === 0 ? (
         <View style={styles.foodPlanCompleteBox}>
           <MaterialIcons name="task-alt" size={22} color={Colors.green600} />
@@ -100,7 +113,7 @@ export function FoodPlanCard({
           </Text>
         </View>
       ) : null}
-      {visibleMeals.map(({ meal, index, key, legacyKey }) => {
+      {visibleMeals.map(({ plan: itemPlan, meal, index, key, legacyKey }) => {
         const options = mealOptions(meal);
         const selectedOptionId = selectedOptions[key] ?? 'main';
         const selectedOption =
@@ -190,7 +203,7 @@ export function FoodPlanCard({
                   isCompleted && styles.foodPlanDoneBtnCompleted,
                   (isCompleting || isSkipped || isCompleted) && styles.foodPlanDoneBtnDisabled,
                 ]}
-                onPress={() => onCompleteMeal(plan, selectedMeal, index)}
+                onPress={() => onCompleteMeal(itemPlan, selectedMeal, index)}
                 disabled={isCompleting || isSkipped || isCompleted}
               >
                 <MaterialIcons name={isCompleted ? 'task-alt' : 'check-circle'} size={18} color={Colors.white} />

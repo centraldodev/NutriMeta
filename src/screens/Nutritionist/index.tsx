@@ -45,17 +45,8 @@ import {
 import {
   calcMacroGoals,
   dateDaysAgoBrasilia,
-  formatBrasiliaTime,
-  formatNutritionDetails,
 } from "../../utils/nutrition";
-import { formatBirthDateInput } from "../../utils/profileValidation";
-import {
-  DAILY_NUTRIENT_ROWS,
-  DEFAULT_GOALS,
-  EMPTY_TOTAL,
-  PATIENT_LOG_LOOKBACK_DAYS,
-  PERIOD_LABELS,
-} from "./types";
+import { DEFAULT_GOALS, EMPTY_TOTAL, PATIENT_LOG_LOOKBACK_DAYS } from "./types";
 import {
   averageNutritionForDates,
   averageWaterForDates,
@@ -63,21 +54,19 @@ import {
   buildTopFoods,
   buildWeekRanges,
   buildWeeklyAlerts,
-  formatDelta,
-  goalPct,
   mealPeriodOrder,
   totalNutritionForDates,
   totalWaterForDates,
 } from "./utils/weeklyAnalysis";
-import { dailyNutrientGoal } from "./utils/goalUtils";
-import {
-  InfoCard,
-  ProgressRow,
-  formatDateLabel,
-  goalLabel,
-} from "./components/ProgressRow";
 import { PatientEditModal } from "./components/PatientEditModal";
 import { FoodPlanModal } from "./components/FoodPlanModal";
+import { PatientSummaryTab } from "./components/PatientSummaryTab";
+import { PatientPlansTab } from "./components/PatientPlansTab";
+import { PatientWeeklyTab } from "./components/PatientWeeklyTab";
+import { PatientRecordsTab } from "./components/PatientRecordsTab";
+import { SearchInput } from "../../components/SearchInput";
+import { BottomSheet } from "../../components/BottomSheet";
+import { ModalActionBar } from "../../components/ModalActionBar";
 import { styles } from "./styles";
 
 function NutritionistScreen() {
@@ -568,16 +557,11 @@ function NutritionistScreen() {
           <>
             <View style={styles.panel}>
               <Text style={styles.sectionTitle}>Pacientes</Text>
-              <View style={styles.searchRow}>
-                <MaterialIcons name="search" size={18} color={Colors.gray400} />
-                <TextInput
-                  style={styles.searchInput}
-                  value={search}
-                  onChangeText={setSearch}
-                  placeholder="Buscar paciente"
-                  placeholderTextColor={Colors.gray400}
-                />
-              </View>
+              <SearchInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Buscar paciente"
+              />
               {loadingPatients ? (
                 <ActivityIndicator color={Colors.green400} />
               ) : filteredPatients.length === 0 ? (
@@ -689,708 +673,64 @@ function NutritionistScreen() {
             ) : null}
 
             {selectedPatient && activePatientView === "summary" ? (
-              <View style={styles.panel}>
-                <View style={styles.sectionHeaderRow}>
-                  <Text style={styles.sectionTitleNoMargin}>
-                    Resumo do paciente
-                  </Text>
-                  <View style={styles.patientActionRow}>
-                    <TouchableOpacity
-                      style={styles.chatBtn}
-                      onPress={() => setEditPatientOpen(true)}
-                    >
-                      <MaterialIcons
-                        name="edit"
-                        size={17}
-                        color={Colors.green600}
-                      />
-                      <Text style={styles.chatBtnText}>Editar</Text>
-                    </TouchableOpacity>
-                    {selectedPatientLink ? (
-                      <TouchableOpacity
-                        style={styles.chatBtn}
-                        onPress={() => setChatLink(selectedPatientLink)}
-                      >
-                        <MaterialIcons
-                          name="chat"
-                          size={17}
-                          color={Colors.green600}
-                        />
-                        <Text style={styles.chatBtnText}>
-                          Chat
-                          {(unreadChatCounts[selectedPatientLink.id] ?? 0) > 0
-                            ? ` (${unreadChatCounts[selectedPatientLink.id]})`
-                            : ""}
-                        </Text>
-                      </TouchableOpacity>
-                    ) : null}
-                  </View>
-                </View>
-                <View style={styles.summaryGrid}>
-                  <InfoCard
-                    label="Nascimento"
-                    value={formatBirthDateInput(selectedPatient.birthDate) || "Não definido"}
-                  />
-                  <InfoCard
-                    label="Idade"
-                    value={`${selectedPatient.age} anos`}
-                  />
-                  <InfoCard
-                    label="Objetivo"
-                    value={goalLabel(selectedPatient.goal)}
-                  />
-                  <InfoCard
-                    label="Altura"
-                    value={`${selectedPatient.height} cm`}
-                  />
-                  <InfoCard
-                    label="Peso"
-                    value={`${selectedPatient.weight} kg`}
-                  />
-                  <InfoCard
-                    label="Atividade"
-                    value={`${selectedPatient.activityLevel}x`}
-                  />
-                </View>
-                <View style={styles.summaryGrid}>
-                  <InfoCard
-                    label="Proteína"
-                    value={`${selectedPatient.macroGoals?.protein ?? calcMacroGoals(selectedPatient).protein} g`}
-                  />
-                  <InfoCard
-                    label="Carboidratos"
-                    value={`${selectedPatient.macroGoals?.carbs ?? calcMacroGoals(selectedPatient).carbs} g`}
-                  />
-                  <InfoCard
-                    label="Gorduras"
-                    value={`${selectedPatient.macroGoals?.fat ?? calcMacroGoals(selectedPatient).fat} g`}
-                  />
-                  <InfoCard
-                    label="Calorias"
-                    value={`${selectedPatient.macroGoals?.kcal ?? calcMacroGoals(selectedPatient).kcal} kcal`}
-                  />
-                </View>
-              </View>
+              <PatientSummaryTab
+                patient={selectedPatient}
+                link={selectedPatientLink}
+                unreadChatCounts={unreadChatCounts}
+                onEdit={() => setEditPatientOpen(true)}
+                onChat={setChatLink}
+              />
             ) : null}
 
             {selectedPatient && activePatientView === "plans" ? (
-              <View style={styles.panel}>
-                <View style={styles.sectionHeaderRow}>
-                  <Text style={styles.sectionTitleNoMargin}>
-                    Planos alimentares
-                  </Text>
-                  <View style={styles.patientActionRow}>
-                    {foodPlans[0] ? (
-                      <TouchableOpacity
-                        style={styles.chatBtn}
-                        onPress={() => setShoppingPdfOpen(true)}
-                      >
-                        <MaterialIcons
-                          name="picture-as-pdf"
-                          size={17}
-                          color={Colors.green600}
-                        />
-                        <Text style={styles.chatBtnText}>Lista PDF</Text>
-                      </TouchableOpacity>
-                    ) : null}
-                    <TouchableOpacity
-                      style={styles.chatBtn}
-                      onPress={openNewFoodPlan}
-                    >
-                      <MaterialIcons
-                        name="add"
-                        size={18}
-                        color={Colors.green600}
-                      />
-                      <Text style={styles.chatBtnText}>Adicionar</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                {foodPlans.length === 0 ? (
-                  <Text style={styles.mutedText}>
-                    Nenhum plano alimentar criado para este paciente.
-                  </Text>
-                ) : (
-                  foodPlans.slice(0, 3).map((plan) => (
-                    <View key={plan.id} style={styles.planCard}>
-                      <View style={styles.planCardHeader}>
-                        <Text style={styles.planTitle}>{plan.title}</Text>
-                        <TouchableOpacity
-                          style={styles.planEditBtn}
-                          onPress={() => openEditFoodPlan(plan)}
-                        >
-                          <MaterialIcons
-                            name="edit"
-                            size={16}
-                            color={Colors.green600}
-                          />
-                          <Text style={styles.planEditText}>Editar</Text>
-                        </TouchableOpacity>
-                      </View>
-                      {plan.notes ? (
-                        <Text style={styles.planNotes}>{plan.notes}</Text>
-                      ) : null}
-                      {plan.meals[0] ? (
-                        <Text style={styles.planNotes}>
-                          {plan.meals[0].time ? `${plan.meals[0].time} · ` : ""}
-                          {plan.meals[0].title}
-                        </Text>
-                      ) : null}
-                      {plan.totalNutrition ? (
-                        <Text style={styles.planNutrition}>
-                          {formatNutritionDetails(plan.totalNutrition, {
-                            includeKcal: true,
-                          })}
-                        </Text>
-                      ) : null}
-                      <Text style={styles.planMeta}>
-                        {plan.meals.length} refeição(ões) ·{" "}
-                        {plan.shoppingList.length} item(ns) na lista de compras
-                      </Text>
-                    </View>
-                  ))
-                )}
-              </View>
+              <PatientPlansTab
+                foodPlans={foodPlans}
+                onShowPdf={() => setShoppingPdfOpen(true)}
+                onNewPlan={openNewFoodPlan}
+                onEditPlan={openEditFoodPlan}
+              />
             ) : null}
 
             {selectedPatient ? (
               <>
                 {activePatientView === "weekly" ? (
-                  <>
-                    <View style={styles.panel}>
-                    <View style={styles.sectionHeaderRow}>
-                      <View>
-                        <Text style={styles.sectionTitleNoMargin}>
-                          Análise semanal do paciente
-                        </Text>
-                        <Text style={styles.sectionSubtitle}>
-                          {selectedWeek.rangeLabel}
-                        </Text>
-                      </View>
-                      <View style={styles.weekRegisteredPill}>
-                        <Text style={styles.weekRegisteredValue}>
-                          {selectedWeekLogs.length}/7
-                        </Text>
-                        <Text style={styles.weekRegisteredLabel}>dias</Text>
-                      </View>
-                    </View>
-
-                    <ScrollView
-                      horizontal
-                      showsHorizontalScrollIndicator={false}
-                      contentContainerStyle={styles.weekSelector}
-                    >
-                      {weekRanges.map((week) => {
-                        const active = week.index === selectedWeekIndex;
-                        return (
-                          <TouchableOpacity
-                            key={week.index}
-                            style={[
-                              styles.weekChip,
-                              active && styles.weekChipActive,
-                            ]}
-                            onPress={() => setSelectedWeekIndex(week.index)}
-                          >
-                            <Text
-                              style={[
-                                styles.weekChipText,
-                                active && styles.weekChipTextActive,
-                              ]}
-                            >
-                              {week.label}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.weekChipRange,
-                                active && styles.weekChipRangeActive,
-                              ]}
-                            >
-                              {week.rangeLabel}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </ScrollView>
-
-                    <View style={styles.summaryGrid}>
-                      <InfoCard
-                        label="Total da semana"
-                        value={`${Math.round(selectedWeekTotal.kcal)} kcal`}
-                      />
-                      <InfoCard
-                        label="Média diária"
-                        value={`${selectedWeekAverage.kcal} kcal`}
-                      />
-                      <InfoCard
-                        label="Água total"
-                        value={`${Math.round(selectedWeekWaterTotal)} ml`}
-                      />
-                      <InfoCard
-                        label="Vs semana anterior"
-                        value={
-                          previousWeek
-                            ? formatDelta(
-                                selectedWeekAverage.kcal -
-                                  previousWeekAverage.kcal,
-                                " kcal",
-                              )
-                            : "sem dados"
-                        }
-                      />
-                    </View>
-                    {previousWeek ? (
-                      <Text style={styles.weekCompareText}>
-                        Água média:{" "}
-                        {formatDelta(
-                          selectedWeekWaterAverage - previousWeekWaterAverage,
-                          " ml",
-                        )}{" "}
-                        vs semana anterior
-                      </Text>
-                    ) : null}
-
-                    <Text style={styles.analysisBlockTitle}>
-                      Aderência às metas
-                    </Text>
-                    <View style={styles.adherenceGrid}>
-                      {[
-                        {
-                          label: "Calorias",
-                          value: goalPct(
-                            selectedWeekAverage.kcal,
-                            patientGoals.kcal,
-                          ),
-                          tone: "neutral",
-                        },
-                        {
-                          label: "Proteína",
-                          value: goalPct(
-                            selectedWeekAverage.protein,
-                            patientGoals.protein,
-                          ),
-                          tone: "neutral",
-                        },
-                        {
-                          label: "Fibra",
-                          value: goalPct(
-                            selectedWeekAverage.fiber,
-                            patientGoals.fiber,
-                          ),
-                          tone: "neutral",
-                        },
-                        {
-                          label: "Água",
-                          value: goalPct(
-                            selectedWeekWaterAverage,
-                            patientGoals.water,
-                          ),
-                          tone: "neutral",
-                        },
-                        {
-                          label: "Sódio",
-                          value: goalPct(
-                            selectedWeekAverage.sodium ?? 0,
-                            patientGoals.sodium,
-                          ),
-                          tone:
-                            (selectedWeekAverage.sodium ?? 0) >
-                            patientGoals.sodium
-                              ? "warn"
-                              : "good",
-                        },
-                        {
-                          label: "Açúcar",
-                          value: goalPct(
-                            selectedWeekAverage.sugar ?? 0,
-                            patientGoals.sugar,
-                          ),
-                          tone:
-                            (selectedWeekAverage.sugar ?? 0) >
-                            patientGoals.sugar
-                              ? "warn"
-                              : "good",
-                        },
-                      ].map((item) => (
-                        <View
-                          key={item.label}
-                          style={[
-                            styles.adherenceItem,
-                            compactAdherenceLayout &&
-                              styles.adherenceItemCompact,
-                          ]}
-                        >
-                          <View style={styles.adherenceTop}>
-                            <Text style={styles.adherenceLabel}>
-                              {item.label}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.adherenceValue,
-                                item.tone === "warn" && styles.adherenceWarn,
-                                item.tone === "good" && styles.adherenceGood,
-                              ]}
-                            >
-                              {item.value}%
-                            </Text>
-                          </View>
-                          <View style={styles.adherenceBarBg}>
-                            <View
-                              style={[
-                                styles.adherenceBarFill,
-                                item.tone === "warn" &&
-                                  styles.adherenceBarWarn,
-                                item.tone === "good" &&
-                                  styles.adherenceBarGood,
-                                { width: `${Math.min(item.value, 100)}%` },
-                              ]}
-                            />
-                          </View>
-                        </View>
-                      ))}
-                    </View>
-
-                    <Text style={styles.analysisBlockTitle}>
-                      Alertas objetivos
-                    </Text>
-                    <View style={styles.alertGrid}>
-                      {selectedWeekAlerts.map((alert) => (
-                        <View
-                          key={alert.label}
-                          style={[
-                            styles.alertChip,
-                            alert.tone === "warn"
-                              ? styles.alertChipWarn
-                              : styles.alertChipGood,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.alertValue,
-                              alert.tone === "warn"
-                                ? styles.alertValueWarn
-                                : styles.alertValueGood,
-                            ]}
-                          >
-                            {alert.value}
-                          </Text>
-                          <Text style={styles.alertLabel}>{alert.label}</Text>
-                        </View>
-                      ))}
-                    </View>
-
-                    <View style={styles.analysisColumns}>
-                      <View style={styles.analysisColumn}>
-                        <Text style={styles.analysisBlockTitle}>
-                          Distribuição por refeição
-                        </Text>
-                        {selectedWeekMealDistribution.length === 0 ? (
-                          <Text style={styles.mutedText}>
-                            Sem refeições nessa semana.
-                          </Text>
-                        ) : (
-                          selectedWeekMealDistribution.map((item) => (
-                            <View
-                              key={item.period}
-                              style={styles.distributionRow}
-                            >
-                              <View style={styles.distributionTop}>
-                                <Text style={styles.distributionName}>
-                                  {item.label}
-                                </Text>
-                                <Text style={styles.distributionValue}>
-                                  {item.pct}%
-                                </Text>
-                              </View>
-                              <View style={styles.distributionBarBg}>
-                                <View
-                                  style={[
-                                    styles.distributionBarFill,
-                                    { width: `${item.pct}%` },
-                                  ]}
-                                />
-                              </View>
-                              <Text style={styles.distributionMeta}>
-                                {item.kcal} kcal · {item.count} item(ns)
-                              </Text>
-                            </View>
-                          ))
-                        )}
-                      </View>
-
-                      <View style={styles.analysisColumn}>
-                        <Text style={styles.analysisBlockTitle}>
-                          Top alimentos
-                        </Text>
-                        {selectedWeekTopFoods.length === 0 ? (
-                          <Text style={styles.mutedText}>
-                            Sem alimentos nessa semana.
-                          </Text>
-                        ) : (
-                          selectedWeekTopFoods.map((item, index) => (
-                            <View key={item.name} style={styles.topFoodRow}>
-                              <Text style={styles.topFoodRank}>
-                                {index + 1}
-                              </Text>
-                              <View style={styles.topFoodEmoji}>
-                                <FoodIcon
-                                  name={item.name}
-                                  emoji={item.emoji}
-                                  size={18}
-                                />
-                              </View>
-                              <View style={styles.topFoodInfo}>
-                                <Text style={styles.topFoodName}>
-                                  {item.name}
-                                </Text>
-                                <Text style={styles.topFoodMeta}>
-                                  {item.count}x · {item.kcal} kcal ·{" "}
-                                  {item.sodium}mg sódio
-                                </Text>
-                              </View>
-                            </View>
-                          ))
-                        )}
-                      </View>
-                    </View>
-                    </View>
-
-                    <View style={styles.panel}>
-                    <Text style={styles.sectionTitle}>Média de nutrientes</Text>
-                    <Text style={styles.sectionSubtitle}>
-                      Média diária dos últimos {PATIENT_LOG_LOOKBACK_DAYS} dias
-                    </Text>
-                    {DAILY_NUTRIENT_ROWS.map((item) => {
-                      const value = periodAverage[item.key];
-                      if (typeof value !== "number") return null;
-                      return (
-                        <ProgressRow
-                          key={item.key}
-                          label={item.label}
-                          value={value}
-                          goal={dailyNutrientGoal(item.key, patientGoals)}
-                          unit={item.unit}
-                        />
-                      );
-                    })}
-                    <ProgressRow
-                      label="Água"
-                      value={periodAverageWaterMl}
-                      goal={patientGoals.water}
-                      unit="ml"
-                    />
-                    </View>
-                  </>
+                  <PatientWeeklyTab
+                    selectedWeek={selectedWeek}
+                    selectedWeekIndex={selectedWeekIndex}
+                    weekRanges={weekRanges}
+                    selectedWeekLogs={selectedWeekLogs}
+                    selectedWeekAverage={selectedWeekAverage}
+                    selectedWeekTotal={selectedWeekTotal}
+                    selectedWeekWaterTotal={selectedWeekWaterTotal}
+                    selectedWeekWaterAverage={selectedWeekWaterAverage}
+                    previousWeek={previousWeek}
+                    previousWeekAverage={previousWeekAverage}
+                    previousWeekWaterAverage={previousWeekWaterAverage}
+                    periodAverage={periodAverage}
+                    periodAverageWaterMl={periodAverageWaterMl}
+                    selectedWeekAlerts={selectedWeekAlerts}
+                    selectedWeekTopFoods={selectedWeekTopFoods}
+                    selectedWeekMealDistribution={selectedWeekMealDistribution}
+                    patientGoals={patientGoals}
+                    compactAdherenceLayout={compactAdherenceLayout}
+                    onWeekSelect={setSelectedWeekIndex}
+                  />
                 ) : null}
 
                 {activePatientView === "records" ? (
-                  <>
-                <View style={styles.panel}>
-                  <View style={styles.sectionHeaderRow}>
-                    <View>
-                      <Text style={styles.sectionTitleNoMargin}>
-                        Registros do paciente
-                      </Text>
-                      <Text style={styles.sectionSubtitle}>
-                        Últimos {PATIENT_LOG_LOOKBACK_DAYS} dias
-                        {logs.length > 0
-                          ? ` · ${logs.length} dia(s) com registro`
-                          : ""}
-                      </Text>
-                    </View>
-                  </View>
-                  {loadingLogs ? (
-                    <ActivityIndicator color={Colors.green400} />
-                  ) : (
-                    <>
-                      {logs.length === 0 ? (
-                        <Text style={styles.mutedText}>
-                          Este paciente ainda não possui registros.
-                        </Text>
-                      ) : null}
-                      <ScrollView
-                        ref={patientDateScrollRef}
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.dateRow}
-                        onContentSizeChange={() =>
-                          patientDateScrollRef.current?.scrollToEnd({
-                            animated: false,
-                          })
-                        }
-                      >
-                        {patientDates.map((date) => {
-                          const active = date === selectedDate;
-                          const hasLog = logsByDate.has(date);
-                          return (
-                            <TouchableOpacity
-                              key={date}
-                              style={[
-                                styles.dateChip,
-                                active && styles.dateChipActive,
-                              ]}
-                              onPress={() => {
-                                setSelectedDate(date);
-                                setNutrientsExpanded(false);
-                              }}
-                            >
-                              <Text
-                                style={[
-                                  styles.dateChipText,
-                                  active && styles.dateChipTextActive,
-                                ]}
-                              >
-                                {formatDateLabel(date)}
-                              </Text>
-                              <View
-                                style={[
-                                  styles.dateDot,
-                                  hasLog && styles.dateDotFilled,
-                                  active && styles.dateDotActive,
-                                ]}
-                              />
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </ScrollView>
-                    </>
-                  )}
-                </View>
-            {selectedLog ? (
-              <>
-                <View style={styles.panel}>
-                  <Text style={styles.sectionTitle}>Metas do dia</Text>
-                  <ProgressRow
-                    label="Calorias"
-                    value={Math.round(selectedLog.totalNutrition.kcal)}
-                    goal={selectedLog.goals.kcal}
-                    unit="kcal"
+                  <PatientRecordsTab
+                    logs={logs}
+                    loadingLogs={loadingLogs}
+                    selectedDate={selectedDate}
+                    patientDates={patientDates}
+                    logsByDate={logsByDate}
+                    selectedLog={selectedLog}
+                    entriesByPeriod={entriesByPeriod}
+                    nutrientsExpanded={nutrientsExpanded}
+                    patientDateScrollRef={patientDateScrollRef}
+                    onDateSelect={(date) => { setSelectedDate(date); setNutrientsExpanded(false); }}
+                    onToggleNutrients={() => setNutrientsExpanded((current) => !current)}
                   />
-                  <ProgressRow
-                    label="Proteína"
-                    value={Math.round(selectedLog.totalNutrition.protein)}
-                    goal={selectedLog.goals.protein}
-                    unit="g"
-                  />
-                  <ProgressRow
-                    label="Carboidratos"
-                    value={Math.round(selectedLog.totalNutrition.carbs)}
-                    goal={selectedLog.goals.carbs}
-                    unit="g"
-                  />
-                  <ProgressRow
-                    label="Gorduras"
-                    value={Math.round(selectedLog.totalNutrition.fat)}
-                    goal={selectedLog.goals.fat}
-                    unit="g"
-                  />
-                  <ProgressRow
-                    label="Fibras"
-                    value={Math.round(selectedLog.totalNutrition.fiber)}
-                    goal={selectedLog.goals.fiber}
-                    unit="g"
-                  />
-                  <ProgressRow
-                    label="Água"
-                    value={selectedLog.waterMl ?? 0}
-                    goal={selectedLog.goals.water}
-                    unit="ml"
-                  />
-
-                  {nutrientsExpanded ? (
-                    <View style={styles.expandedNutrients}>
-                      <Text style={styles.expandedNutrientsTitle}>
-                        Nutrientes completos
-                      </Text>
-                      {DAILY_NUTRIENT_ROWS.filter(
-                        (item) =>
-                          ![
-                            "kcal",
-                            "protein",
-                            "carbs",
-                            "fat",
-                            "fiber",
-                          ].includes(item.key),
-                      ).map((item) => {
-                        const value = selectedLog.totalNutrition[item.key] ?? 0;
-                        return (
-                          <ProgressRow
-                            key={item.key}
-                            label={item.label}
-                            value={Math.round(value)}
-                            goal={dailyNutrientGoal(item.key, selectedLog.goals)}
-                            unit={item.unit}
-                          />
-                        );
-                      })}
-                    </View>
-                  ) : null}
-
-                  <TouchableOpacity
-                    style={styles.expandNutrientsBtn}
-                    onPress={() => setNutrientsExpanded((current) => !current)}
-                  >
-                    <Text style={styles.expandNutrientsText}>
-                      {nutrientsExpanded
-                        ? "Ocultar nutrientes completos"
-                        : "Ver nutrientes completos"}
-                    </Text>
-                    <MaterialIcons
-                      name={nutrientsExpanded ? "expand-less" : "expand-more"}
-                      size={22}
-                      color={Colors.green600}
-                    />
-                  </TouchableOpacity>
-                </View>
-
-                <View style={styles.panel}>
-                  <Text style={styles.sectionTitle}>Refeições e horários</Text>
-                  {entriesByPeriod.length === 0 ? (
-                    <Text style={styles.mutedText}>
-                      Nenhuma refeição registrada neste dia.
-                    </Text>
-                  ) : (
-                    entriesByPeriod.map(([period, entries]) => (
-                      <View key={period} style={styles.periodBlock}>
-                        <Text style={styles.periodTitle}>
-                          {PERIOD_LABELS[period] ?? period}
-                        </Text>
-                        {entries.map((entry) => (
-                          <View key={entry.id} style={styles.entryRow}>
-                            <View style={styles.entryEmoji}>
-                              <FoodIcon
-                                name={entry.foodName}
-                                emoji={entry.emoji}
-                                size={18}
-                              />
-                            </View>
-                            <View style={styles.entryBody}>
-                              <Text style={styles.entryName}>
-                                {entry.foodName}
-                              </Text>
-                              <Text style={styles.entryMeta}>
-                                {formatBrasiliaTime(new Date(entry.addedAt))}
-                                {" · "}
-                                {formatNutritionDetails(entry.nutrition, {
-                                  includeKcal: true,
-                                })}
-                              </Text>
-                            </View>
-                          </View>
-                        ))}
-                      </View>
-                    ))
-                  )}
-                </View>
-              </>
-            ) : (
-              <View style={styles.panel}>
-                <Text style={styles.sectionTitle}>Refeições e horários</Text>
-                <Text style={styles.mutedText}>
-                  Nenhuma refeição registrada em {formatDateLabel(selectedDate)}.
-                </Text>
-              </View>
-            )}
-                  </>
                 ) : null}
               </>
             ) : null}
@@ -1438,28 +778,13 @@ function NutritionistScreen() {
                 keyboardType="email-address"
               />
             </View>
-            <View style={styles.inviteModalActions}>
-              <TouchableOpacity
-                style={styles.cancelBtn}
-                onPress={() => setInviteModalOpen(false)}
-              >
-                <Text style={styles.cancelText}>Cancelar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.saveBtn,
-                  (!inviteEmail.trim() || inviteLoading) && styles.btnDisabled,
-                ]}
-                onPress={handleSendInvite}
-                disabled={!inviteEmail.trim() || inviteLoading}
-              >
-                {inviteLoading ? (
-                  <ActivityIndicator color={Colors.white} />
-                ) : (
-                  <Text style={styles.saveText}>Enviar solicitação</Text>
-                )}
-              </TouchableOpacity>
-            </View>
+            <ModalActionBar
+              onCancel={() => setInviteModalOpen(false)}
+              onConfirm={handleSendInvite}
+              confirmLabel="Enviar solicitação"
+              loading={inviteLoading}
+              disabled={!inviteEmail.trim()}
+            />
           </View>
         </View>
       </Modal>
@@ -1474,64 +799,45 @@ function NutritionistScreen() {
         visible={helpOpen}
         onClose={() => setHelpOpen(false)}
       />
-      <Modal
+      <BottomSheet
         visible={chatNotificationsOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setChatNotificationsOpen(false)}
+        onClose={() => setChatNotificationsOpen(false)}
+        title="Notificações"
       >
-        <View style={styles.modalBg}>
-          <TouchableOpacity
-            style={styles.modalBackdrop}
-            onPress={() => setChatNotificationsOpen(false)}
-          />
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHandle} />
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Notificações</Text>
-              <TouchableOpacity
-                style={styles.modalCloseBtn}
-                onPress={() => setChatNotificationsOpen(false)}
-              >
-                <MaterialIcons name="close" size={20} color={Colors.gray600} />
-              </TouchableOpacity>
+        <ScrollView contentContainerStyle={styles.modalScroll}>
+          {unreadChatLinks.length === 0 ? (
+            <View style={styles.emptyState}>
+              <MaterialIcons
+                name="notifications-none"
+                size={34}
+                color={Colors.gray400}
+              />
+              <Text style={styles.emptyText}>
+                Nenhuma mensagem nova no momento.
+              </Text>
             </View>
-            <ScrollView contentContainerStyle={styles.modalScroll}>
-              {unreadChatLinks.length === 0 ? (
-                <View style={styles.emptyState}>
-                  <MaterialIcons
-                    name="notifications-none"
-                    size={34}
-                    color={Colors.gray400}
-                  />
-                  <Text style={styles.emptyText}>
-                    Nenhuma mensagem nova no momento.
-                  </Text>
-                </View>
-              ) : (
-                unreadChatLinks.map((link) => (
-                  <TouchableOpacity
-                    key={link.id}
-                    style={styles.notificationCard}
-                    onPress={() => {
-                      setChatNotificationsOpen(false);
-                      setChatLink(link);
-                    }}
-                  >
-                    <Text style={styles.notificationTitle}>Mensagem nova</Text>
-                    <Text style={styles.notificationText}>
-                      {link.patientName} enviou {unreadChatCounts[link.id] ?? 0} mensagem(ns).
-                    </Text>
-                    <Text style={styles.notificationMeta}>
-                      Toque para abrir o chat.
-                    </Text>
-                  </TouchableOpacity>
-                ))
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+          ) : (
+            unreadChatLinks.map((link) => (
+              <TouchableOpacity
+                key={link.id}
+                style={styles.notificationCard}
+                onPress={() => {
+                  setChatNotificationsOpen(false);
+                  setChatLink(link);
+                }}
+              >
+                <Text style={styles.notificationTitle}>Mensagem nova</Text>
+                <Text style={styles.notificationText}>
+                  {link.patientName} enviou {unreadChatCounts[link.id] ?? 0} mensagem(ns).
+                </Text>
+                <Text style={styles.notificationMeta}>
+                  Toque para abrir o chat.
+                </Text>
+              </TouchableOpacity>
+            ))
+          )}
+        </ScrollView>
+      </BottomSheet>
       <ConfirmDialog
         visible={logoutConfirmOpen}
         title="Sair da conta"

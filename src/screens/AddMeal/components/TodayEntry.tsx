@@ -4,12 +4,12 @@ import {
   Text,
   TouchableOpacity,
   TextInput,
-  Modal,
   Alert,
-  ActivityIndicator,
 } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
 import { Colors } from "../../../constants/theme";
+import { BottomSheet } from "../../../components/BottomSheet";
+import { ModalActionBar } from "../../../components/ModalActionBar";
 import { calculateNutrition, UNIT_LABELS } from "../../../constants/foodDatabase";
 import { FoodItem, MealEntry, MealPeriod, QuantityUnit } from "../../../types";
 import { formatBrasiliaTime, formatNutritionDetails } from "../../../utils/nutrition";
@@ -22,8 +22,9 @@ import {
   emptyNutrition,
 } from "../utils/mealUtils";
 import { getWaterMl, parseOptionalQtyInput } from "../utils/foodSearch";
-import { logStyle, modal } from "../styles";
-import { MealPeriodPicker } from "./AddMealModal";
+import { logStyle } from "../styles";
+import { modal } from "../modalStyles";
+import { MealPeriodPicker } from "./MealPeriodPicker";
 
 // ─── Today Log ────────────────────────────────────────────────────────────────
 
@@ -144,83 +145,59 @@ export function EditMealEntryModal({
   }
 
   return (
-    <Modal
+    <BottomSheet
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
+      onClose={onClose}
+      title="Editar refeição"
+      subtitle={food ? `${food.emoji} ${food.name}` : undefined}
+      closeType="pill"
+      closeLabel="Fechar"
     >
-      <View style={modal.bg}>
-        <TouchableOpacity style={modal.backdrop} onPress={onClose} />
-        <View style={modal.sheet}>
-          <View style={modal.handle} />
-          <View style={modal.modalHeader}>
-            <View>
-              <Text style={modal.title}>Editar refeição</Text>
-              <Text style={modal.subtitle}>
-                {food?.emoji} {food?.name}
-              </Text>
-            </View>
-            <TouchableOpacity style={modal.closePill} onPress={onClose}>
-              <Text style={modal.closePillText}>Fechar</Text>
-            </TouchableOpacity>
+      <View style={modal.bodyContent}>
+        <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
+        <View style={modal.selectedItem}>
+          <Text style={modal.inlineLabel}>Quantidade</Text>
+          <TextInput
+            style={modal.selectedQtyInput}
+            value={quantityText}
+            onChangeText={setQuantityText}
+            keyboardType="decimal-pad"
+            placeholder="1"
+            placeholderTextColor={Colors.gray400}
+          />
+          <View style={modal.selectedUnits}>
+            {getFoodUnits(food).map((unitOption) => (
+              <TouchableOpacity
+                key={unitOption}
+                style={[
+                  modal.unitChip,
+                  unit === unitOption && modal.unitChipActive,
+                ]}
+                onPress={() => setUnit(unitOption)}
+              >
+                <Text
+                  style={[
+                    modal.unitChipText,
+                    unit === unitOption && modal.unitChipTextActive,
+                  ]}
+                >
+                  {UNIT_LABELS[unitOption]}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </View>
-          <View style={modal.bodyContent}>
-            <MealPeriodPicker value={mealPeriod} onChange={setMealPeriod} />
-            <View style={modal.selectedItem}>
-              <Text style={modal.inlineLabel}>Quantidade</Text>
-              <TextInput
-                style={modal.selectedQtyInput}
-                value={quantityText}
-                onChangeText={setQuantityText}
-                keyboardType="decimal-pad"
-                placeholder="1"
-                placeholderTextColor={Colors.gray400}
-              />
-              <View style={modal.selectedUnits}>
-                {getFoodUnits(food).map((unitOption) => (
-                  <TouchableOpacity
-                    key={unitOption}
-                    style={[
-                      modal.unitChip,
-                      unit === unitOption && modal.unitChipActive,
-                    ]}
-                    onPress={() => setUnit(unitOption)}
-                  >
-                    <Text
-                      style={[
-                        modal.unitChipText,
-                        unit === unitOption && modal.unitChipTextActive,
-                      ]}
-                    >
-                      {UNIT_LABELS[unitOption]}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <Text style={modal.selectedMeta}>
-                {formatNutritionDetails(nutrition, { includeKcal: true })}
-              </Text>
-            </View>
-          </View>
-          <View style={modal.actions}>
-            <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
-              <Text style={modal.btnCancelText}>Cancelar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[modal.btnAdd, saving && modal.btnDisabled]}
-              onPress={handleSave}
-              disabled={saving}
-            >
-              {saving ? (
-                <ActivityIndicator color={Colors.white} />
-              ) : (
-                <Text style={modal.btnAddText}>Salvar alterações</Text>
-              )}
-            </TouchableOpacity>
-          </View>
+          <Text style={modal.selectedMeta}>
+            {formatNutritionDetails(nutrition, { includeKcal: true })}
+          </Text>
         </View>
       </View>
-    </Modal>
+      <ModalActionBar
+        onCancel={onClose}
+        onConfirm={handleSave}
+        cancelLabel="Cancelar"
+        confirmLabel="Salvar alterações"
+        loading={saving}
+      />
+    </BottomSheet>
   );
 }

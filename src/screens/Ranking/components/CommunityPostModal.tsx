@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Alert,
   Image,
-  Modal,
   ScrollView,
   Text,
   TextInput,
@@ -21,6 +20,9 @@ import { CommunityPost, MealPeriod } from '../../../types';
 import { CommunityDetectedFood, FriendOption, VISIBILITY_OPTIONS } from '../types';
 import { getDefaultMealPeriod, multiplyNutrition } from '../utils/communityUtils';
 import { modalStyles } from '../styles';
+import { BottomSheet } from '../../../components/BottomSheet';
+import { ModalActionBar } from '../../../components/ModalActionBar';
+import { SearchInput } from '../../../components/SearchInput';
 
 export function CommunityPostModal({
   visible,
@@ -230,19 +232,11 @@ export function CommunityPostModal({
   }
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={modalStyles.bg}>
-        <TouchableOpacity style={modalStyles.backdrop} onPress={onClose} />
-        <View style={modalStyles.sheet}>
-          <View style={modalStyles.handle} />
-          <View style={modalStyles.header}>
-            <Text style={modalStyles.title}>{isEditing ? 'Editar post' : 'Novo post'}</Text>
-            <TouchableOpacity onPress={onClose} style={modalStyles.closeBtn}>
-              <MaterialIcons name="close" size={20} color={Colors.gray600} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView contentContainerStyle={modalStyles.content} keyboardShouldPersistTaps="handled">
+    <BottomSheet
+      visible={visible}
+      onClose={onClose}
+      title={isEditing ? 'Editar post' : 'Novo post'}>
+      <ScrollView contentContainerStyle={modalStyles.content} keyboardShouldPersistTaps="handled">
             <Text style={modalStyles.label}>Descrição</Text>
             <TextInput
               style={modalStyles.captionInput}
@@ -348,18 +342,11 @@ export function CommunityPostModal({
               </Text>
             ) : (
               <View>
-                <View style={modalStyles.tagSearchBox}>
-                  <MaterialIcons name="search" size={18} color={Colors.gray400} />
-                  <TextInput
-                    style={modalStyles.tagSearchInput}
-                    value={tagSearch}
-                    onChangeText={setTagSearch}
-                    placeholder="Buscar amigo por nome ou @nickname"
-                    placeholderTextColor={Colors.gray400}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
-                </View>
+                <SearchInput
+                  value={tagSearch}
+                  onChangeText={setTagSearch}
+                  placeholder="Buscar amigo por nome ou @nickname"
+                />
                 {tagResults.length > 0 ? (
                   <View style={modalStyles.tagResults}>
                     {tagResults.map((friend) => (
@@ -408,20 +395,12 @@ export function CommunityPostModal({
             )}
           </ScrollView>
 
-          <View style={modalStyles.actions}>
-            <TouchableOpacity style={modalStyles.cancelBtn} onPress={onClose}>
-              <Text style={modalStyles.cancelText}>Cancelar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[modalStyles.publishBtn, publishing && modalStyles.aiButtonDisabled]}
-              onPress={publish}
-              disabled={publishing}
-            >
-              {publishing ? <ActivityIndicator color={Colors.white} /> : <Text style={modalStyles.publishText}>{isEditing ? 'Salvar' : 'Publicar'}</Text>}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
+      <ModalActionBar
+        onCancel={onClose}
+        onConfirm={publish}
+        confirmLabel={isEditing ? 'Salvar' : 'Publicar'}
+        loading={publishing}
+      />
+    </BottomSheet>
   );
 }

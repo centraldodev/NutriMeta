@@ -5,7 +5,6 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  Modal,
   Alert,
   ActivityIndicator,
 } from "react-native";
@@ -14,12 +13,12 @@ import { Colors } from "../../../constants/theme";
 import { calculateNutrition, UNIT_LABELS } from "../../../constants/foodDatabase";
 import { useStore, selectGoals, selectSavedMeals } from "../../../store";
 import { saveMealEntryOrQueue } from "../../../services/pendingSyncService";
-import { FoodItem, MealEntry, MealPeriod, QuantityUnit, FoodNutrition } from "../../../types";
+import { FoodItem, MealEntry, MealPeriod, QuantityUnit } from "../../../types";
 import { sumNutrition } from "../../../utils/nutrition";
 import { isAiLimitError, showAiLimitAlert } from "../../../utils/aiErrors";
 import { isFirebaseConfigured } from "../../../config";
 import { FoodIcon } from "../../../components/FoodIcon";
-import { ManualMealSelection, MEAL_PERIODS } from "../types";
+import { ManualMealSelection } from "../types";
 import {
   searchFoods,
   findExactFood,
@@ -38,100 +37,99 @@ import {
   buildMealPayload,
   getDefaultMealPeriod,
 } from "../utils/mealUtils";
-import { modal } from "../styles";
+import { modal } from "../modalStyles";
+import { NutritionSummary } from "./NutritionSummary";
+import { MealPeriodPicker } from "./MealPeriodPicker";
+import { BottomSheet } from "../../../components/BottomSheet";
+import { ModalActionBar } from "../../../components/ModalActionBar";
 
-const NUTRITION_SUMMARY_ROWS: {
-  key: keyof FoodNutrition;
-  label: string;
-  unit: string;
-}[] = [
-  { key: "sodium", label: "Sódio", unit: "mg" },
-  { key: "calcium", label: "Ca", unit: "mg" },
-  { key: "iron", label: "Fe", unit: "mg" },
-  { key: "potassium", label: "K", unit: "mg" },
-  { key: "magnesium", label: "Mg", unit: "mg" },
-  { key: "zinc", label: "Zn", unit: "mg" },
-  { key: "vitaminC", label: "Vit. C", unit: "mg" },
-];
-
-function NutritionSummary({ nutrition }: { nutrition: FoodNutrition }) {
-  const macroText = [
-    `${formatFactValue(nutrition.kcal)}kcal`,
-    `P ${formatFactValue(nutrition.protein)}g`,
-    `C ${formatFactValue(nutrition.carbs)}g`,
-    `G ${formatFactValue(nutrition.fat)}g`,
-    nutrition.fiber > 0 ? `Fib ${formatFactValue(nutrition.fiber)}g` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
-  const microText = NUTRITION_SUMMARY_ROWS.map((row) => ({
-    ...row,
-    value: nutrition[row.key],
-  }))
-    .filter(
-      (row): row is typeof row & { value: number } =>
-        typeof row.value === "number" &&
-        Number.isFinite(row.value) &&
-        row.value > 0,
-    )
-    .slice(0, 3)
-    .map((row) => `${row.label} ${formatFactValue(row.value)}${row.unit}`)
-    .join(" · ");
-
-  return (
-    <>
-      <Text style={modal.nutritionSummary} numberOfLines={1}>
-        {macroText}
-      </Text>
-      {microText ? (
-        <Text style={modal.nutritionMicroSummary} numberOfLines={1}>
-          {microText}
-        </Text>
-      ) : null}
-    </>
-  );
-}
-
-function formatFactValue(value: number): string {
-  if (value >= 100) return String(Math.round(value));
-  if (value >= 10) return String(Math.round(value * 10) / 10).replace(".", ",");
-  if (value >= 1) return String(Math.round(value * 10) / 10).replace(".", ",");
-  return String(Math.round(value * 100) / 100).replace(".", ",");
-}
-
-export function MealPeriodPicker({
-  value,
-  onChange,
+function QuantityPicker({
+  food,
+  qtyText,
+  qtyUnit,
+  onChangeQty,
+  onChangeUnit,
+  onAddToList,
+  onFinish,
+  onCancel,
+  saving,
 }: {
-  value: MealPeriod;
-  onChange: (period: MealPeriod) => void;
+  food: FoodItem;
+  qtyText: string;
+  qtyUnit: QuantityUnit;
+  onChangeQty: (v: string) => void;
+  onChangeUnit: (u: QuantityUnit) => void;
+  onAddToList: () => void;
+  onFinish: () => void;
+  onCancel: () => void;
+  saving: boolean;
 }) {
+  const units = getFoodUnits(food);
+  const qty = parseOptionalQtyInput(qtyText);
+  const nutrition = calculateNutrition(food, qty || 1, qtyUnit);
+
   return (
-    <View style={modal.periodBox}>
-      <Text style={modal.label}>Refeição</Text>
-      <View style={modal.periodRow}>
-        {MEAL_PERIODS.map((period) => {
-          const active = period.key === value;
-          return (
-            <TouchableOpacity
-              key={period.key}
-              style={[modal.periodChip, active && modal.periodChipActive]}
-              onPress={() => onChange(period.key)}
-            >
-              <MaterialIcons
-                name={period.icon as any}
-                size={16}
-                color={active ? Colors.white : Colors.gray600}
-              />
-              <Text
-                style={[modal.periodText, active && modal.periodTextActive]}
+    <View style={modal.qtyPickerPanel}>
+      <View style={modal.qtyPickerHeader}>
+        <FoodIcon name={food.name} emoji={food.emoji} size={18} variant="plain" />
+        <Text style={modal.qtyPickerName} numberOfLines={1}>{food.name}</Text>
+        <TouchableOpacity onPress={onCancel}>
+          <MaterialIcons name="close" size={18} color={Colors.gray400} />
+        </TouchableOpacity>
+      </View>
+      <Text style={modal.qtyPickerNutritionText}>
+        {Math.round(nutrition.kcal)} kcal · {Math.round(nutrition.protein)}g proteína
+      </Text>
+      <View style={modal.qtyPickerRow}>
+        <View style={modal.qtyPickerInputWrap}>
+          <TextInput
+            style={modal.qtyPickerInput}
+            value={qtyText}
+            onChangeText={onChangeQty}
+            keyboardType="decimal-pad"
+            placeholder="1"
+            placeholderTextColor={Colors.gray400}
+            selectTextOnFocus
+          />
+        </View>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={modal.qtyPickerUnitsScroll}
+        >
+          <View style={modal.qtyPickerUnits}>
+            {units.map((unit) => (
+              <TouchableOpacity
+                key={unit}
+                style={[modal.unitChip, qtyUnit === unit && modal.unitChipActive]}
+                onPress={() => onChangeUnit(unit)}
               >
-                {period.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
+                <Text style={[modal.unitChipText, qtyUnit === unit && modal.unitChipTextActive]}>
+                  {UNIT_LABELS[unit]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </ScrollView>
+      </View>
+      <View style={modal.qtyPickerActions}>
+        <TouchableOpacity
+          style={modal.qtyPickerAddBtn}
+          onPress={onAddToList}
+          disabled={saving}
+        >
+          <MaterialIcons name="add" size={15} color={Colors.green600} />
+          <Text style={modal.qtyPickerAddBtnText}>Adicionar à lista</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[modal.qtyPickerFinishBtn, saving && modal.qtyPickerFinishBtnDisabled]}
+          onPress={onFinish}
+          disabled={saving}
+        >
+          <Text style={modal.qtyPickerFinishBtnText}>
+            {saving ? 'Salvando...' : 'Concluir'}
+          </Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -143,6 +141,7 @@ function AddMealModal({
   onAdded,
   customFoods,
   onCreateFood,
+  initialFoods,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -152,6 +151,7 @@ function AddMealModal({
     foodName: string,
     preferredUnit: QuantityUnit,
   ) => Promise<FoodItem>;
+  initialFoods?: ManualMealSelection[];
 }) {
   const goals = useStore(selectGoals);
   const user = useStore((s) => s.user);
@@ -162,7 +162,6 @@ function AddMealModal({
   const [foodQuery, setFoodQuery] = useState("");
   const [saving, setSaving] = useState(false);
   const [selecting, setSelecting] = useState(false);
-  const [addingFoodId, setAddingFoodId] = useState<string | null>(null);
   const [listeningSearch, setListeningSearch] = useState(false);
   const [foodItem, setFoodItem] = useState<FoodItem | null>(null);
   const [selectedFoods, setSelectedFoods] = useState<ManualMealSelection[]>([]);
@@ -171,6 +170,9 @@ function AddMealModal({
   const [mealPeriod, setMealPeriod] = useState<MealPeriod>(
     getDefaultMealPeriod(),
   );
+  const [quantityFood, setQuantityFood] = useState<FoodItem | null>(null);
+  const [quantityQtyText, setQuantityQtyText] = useState("1");
+  const [quantityUnit, setQuantityUnit] = useState<QuantityUnit>("porcao");
 
   const suggestions = React.useMemo(
     () => searchFoods(foodQuery, customFoods),
@@ -211,7 +213,11 @@ function AddMealModal({
     setListeningSearch(false);
     setFoodQuery("");
     setFoodItem(null);
-    updateSelectedFoods([]);
+    setQuantityFood(null);
+    setQuantityQtyText("1");
+    // initialFoods intentionally not in deps — read at open time
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    updateSelectedFoods(initialFoods ?? []);
     setMealPeriod(getDefaultMealPeriod());
   }, [visible]);
 
@@ -387,25 +393,65 @@ function AddMealModal({
     );
   }
 
-  async function handleAddFoodOption(food: FoodItem) {
-    if (selecting || saving || addingFoodId) return;
-    setAddingFoodId(food.id);
-    try {
-      const preferredUnit = getPreferredFoodUnit(food);
-      const selection = selectionFromFood(food, { preferredUnit });
-      updateSelectedFoods((items) => [...items, selection]);
-      if (foodItem?.id === food.id) {
-        setFoodQuery("");
-        setFoodItem(null);
+  function handleAddFoodOption(food: FoodItem) {
+    if (selecting || saving) return;
+
+    // Expand prepared dishes (pratos feitos) into their individual ingredients
+    if (food.ingredients && food.ingredients.length > 0) {
+      const baseFoods = customFoods.filter(
+        (f) => f.source !== 'json:pratos_feitos_brasileiros',
+      );
+      const expanded: ManualMealSelection[] = [];
+      for (const ingredient of food.ingredients) {
+        const qty = ingredient.quantidade_g ?? 0;
+        if (qty < 5) continue;
+        const found = findAnyFood(ingredient.nome, baseFoods);
+        if (!found) continue;
+        expanded.push(
+          selectionFromFood(found, {
+            quantityText: String(qty).replace('.', ','),
+            preferredUnit: 'grama',
+          }),
+        );
       }
-    } catch (error) {
-      console.warn("Failed to add food option", error);
-      if (isAiLimitError(error)) showAiLimitAlert();
-      else
-        Alert.alert("Erro", "Não foi possível adicionar este alimento agora.");
-    } finally {
-      setAddingFoodId(null);
+      if (expanded.length > 0) {
+        updateSelectedFoods((items) => [...items, ...expanded]);
+        setFoodQuery('');
+        setFoodItem(null);
+        return;
+      }
     }
+
+    const preferredUnit = getPreferredFoodUnit(food);
+    const selectedUnit = food.nutritionPer[preferredUnit] ? preferredUnit : food.defaultUnit;
+    const defaultQty =
+      food.defaultUnit === "mililitro" && selectedUnit === "mililitro" ? 200 : 1;
+    setQuantityFood(food);
+    setQuantityQtyText(String(defaultQty));
+    setQuantityUnit(selectedUnit);
+  }
+
+  function handleAddToList() {
+    if (!quantityFood) return;
+    const selection = selectionFromFood(quantityFood, {
+      quantityText: quantityQtyText,
+      preferredUnit: quantityUnit,
+    });
+    updateSelectedFoods((items) => [...items, selection]);
+    setQuantityFood(null);
+    setQuantityQtyText("1");
+  }
+
+  async function handleFinishWithQuantity() {
+    if (!quantityFood) return;
+    const selection = selectionFromFood(quantityFood, {
+      quantityText: quantityQtyText,
+      preferredUnit: quantityUnit,
+    });
+    updateSelectedFoods((items) => [...items, selection]);
+    setQuantityFood(null);
+    setQuantityQtyText("1");
+    await handleAdd();
   }
 
   async function handleSelectCurrentFood() {
@@ -544,32 +590,21 @@ function AddMealModal({
     [selectedFoods],
   );
   const canSaveMeal =
-    selectedFoods.length > 0 && !saving && !selecting && !addingFoodId;
+    selectedFoods.length > 0 && !saving && !selecting && !quantityFood;
 
   return (
-    <Modal
+    <BottomSheet
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <View style={modal.bg}>
-        <TouchableOpacity style={modal.backdrop} onPress={onClose} />
-        <View style={modal.sheet}>
-          <View style={modal.handle} />
-          <View style={modal.modalHeader}>
-            <View>
-              <Text style={modal.title}>Adicionar alimentos</Text>
-              <Text style={modal.subtitle}>
-                {selectedFoods.length > 0
-                  ? `${selectedFoods.length} alimento(s) selecionado(s)`
-                  : "Monte a refeição antes de salvar"}
-              </Text>
-            </View>
-            <TouchableOpacity style={modal.closePill} onPress={onClose}>
-              <Text style={modal.closePillText}>Concluir</Text>
-            </TouchableOpacity>
-          </View>
+      onClose={onClose}
+      title="Adicionar alimentos"
+      subtitle={
+        selectedFoods.length > 0
+          ? `${selectedFoods.length} alimento(s) selecionado(s)`
+          : "Monte a refeição antes de salvar"
+      }
+      closeType="pill"
+      closeLabel="Concluir"
+      fillHeight>
 
           <ScrollView
             style={modal.body}
@@ -707,25 +742,17 @@ function AddMealModal({
                         <TouchableOpacity
                           style={[
                             modal.foodAddButton,
-                            (saving || selecting || !!addingFoodId) &&
-                              modal.foodAddButtonDisabled,
+                            (saving || selecting) && modal.foodAddButtonDisabled,
                           ]}
                           onPress={() => handleAddFoodOption(food)}
-                          disabled={saving || selecting || !!addingFoodId}
-                          accessibilityLabel={`Adicionar ${food.name}`}
+                          disabled={saving || selecting}
+                          accessibilityLabel={`Selecionar ${food.name}`}
                         >
-                          {addingFoodId === food.id ? (
-                            <ActivityIndicator
-                              size="small"
-                              color={Colors.white}
-                            />
-                          ) : (
-                            <MaterialIcons
-                              name="add"
-                              size={20}
-                              color={Colors.white}
-                            />
-                          )}
+                          <MaterialIcons
+                            name="add"
+                            size={20}
+                            color={Colors.white}
+                          />
                         </TouchableOpacity>
                       </View>
                     </TouchableOpacity>
@@ -780,7 +807,7 @@ function AddMealModal({
                     color={Colors.green600}
                   />
                   <Text style={modal.emptySelectionText}>
-                    Use o botão + nos alimentos acima para montar a refeição.
+                    Toque em + nos alimentos acima para selecionar e ajustar a quantidade.
                   </Text>
                 </View>
               ) : (
@@ -879,25 +906,29 @@ function AddMealModal({
             </View>
           </ScrollView>
 
-          <View style={modal.actions}>
-            <TouchableOpacity style={modal.btnCancel} onPress={onClose}>
-              <Text style={modal.btnCancelText}>Fechar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[modal.btnAdd, !canSaveMeal && modal.btnDisabled]}
-              onPress={handleAdd}
-              disabled={!canSaveMeal}
-            >
-              {saving ? (
-                <ActivityIndicator color={Colors.white} />
-              ) : (
-                <Text style={modal.btnAddText}>Adicionar refeição</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
+          {quantityFood ? (
+            <QuantityPicker
+              food={quantityFood}
+              qtyText={quantityQtyText}
+              qtyUnit={quantityUnit}
+              onChangeQty={setQuantityQtyText}
+              onChangeUnit={setQuantityUnit}
+              onAddToList={handleAddToList}
+              onFinish={handleFinishWithQuantity}
+              onCancel={() => setQuantityFood(null)}
+              saving={saving}
+            />
+          ) : null}
+
+      <ModalActionBar
+        onCancel={onClose}
+        onConfirm={handleAdd}
+        cancelLabel="Fechar"
+        confirmLabel="Adicionar refeição"
+        loading={saving}
+        disabled={!canSaveMeal}
+      />
+    </BottomSheet>
   );
 }
 
