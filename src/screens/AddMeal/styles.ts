@@ -11,7 +11,7 @@ export const styles = StyleSheet.create({
   pageScroll: { flex: 1 },
   headerBar: {
     width: "100%",
-    maxWidth: Platform.OS === "web" ? 760 : undefined,
+    maxWidth: undefined,
     alignSelf: "center",
     backgroundColor: Colors.white,
     padding: Spacing.base,
@@ -74,7 +74,7 @@ export const styles = StyleSheet.create({
   },
   fabInner: {
     width: "100%",
-    maxWidth: Platform.OS === "web" ? 760 : undefined,
+    maxWidth: undefined,
     alignSelf: "center",
     alignItems: "flex-end",
     paddingHorizontal: Spacing.base,
@@ -145,7 +145,7 @@ export const styles = StyleSheet.create({
   },
   scroll: {
     width: "100%",
-    maxWidth: Platform.OS === "web" ? 760 : undefined,
+    maxWidth: undefined,
     alignSelf: "center",
     padding: Spacing.base,
     paddingBottom: Spacing.xl,

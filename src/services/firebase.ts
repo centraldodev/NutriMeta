@@ -54,13 +54,20 @@ if (Platform.OS === 'web') {
 if (Platform.OS === 'web') {
   try {
     db = initializeFirestore(app, {
+      ignoreUndefinedProperties: true,
       localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
     });
   } catch {
     db = getFirestore(app);
   }
 } else {
-  db = getFirestore(app);
+  try {
+    db = initializeFirestore(app, {
+      ignoreUndefinedProperties: true,
+    });
+  } catch {
+    db = getFirestore(app);
+  }
 }
 
 storage = getStorage(app);
@@ -85,6 +92,7 @@ export const COLLECTIONS = {
   nutritionistLinks: 'nutritionistLinks',
   nutritionistMessages: 'nutritionistMessages',
   foodPlans: 'foodPlans',
+  foodPlanMealStatuses: 'foodPlanMealStatuses',
   notifications: 'notifications',
 } as const;
 

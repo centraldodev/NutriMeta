@@ -1,22 +1,24 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Platform, ScrollView, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 
-import { Colors } from '../../constants/theme';
+import { Colors, Spacing } from '../../constants/theme';
 import { isFirebaseConfigured } from '../../config';
 import { signOut } from '../../services/authService';
 import { respondNutritionistInvite, subscribePatientAcceptedNutritionistLinks, subscribePatientNutritionistInvites } from '../../services/nutritionistLinkService';
 import { subscribeUnreadChatCountByLink } from '../../services/nutritionistChatService';
 import { subscribePatientFoodPlans } from '../../services/nutritionistService';
 import { saveMealEntryOrQueue } from '../../services/pendingSyncService';
+import { FoodPlanMealStatus, setFoodPlanMealStatus, subscribeFoodPlanMealStatuses } from '../../services/foodPlanStatusService';
 import { markNotificationsRead, subscribePatientNotifications } from '../../services/groupService';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { NutritionistChatModal } from '../../components/NutritionistChatModal';
 import { ShoppingPdfModal } from '../../components/ShoppingPdfModal';
 import { NutritionDataHelpModal } from '../../components/NutritionDataHelpModal';
+import { SkeletonBlock, SkeletonLine } from '../../components/Skeleton';
 import { useStore, selectGoals, selectTodayLog, selectUnreadCount } from '../../store';
-import { formatBrasiliaDate, formatKcal, generateId, getBrasiliaHour, macroPercent } from '../../utils/nutrition';
+import { formatBrasiliaDate, formatDate, formatKcal, generateId, getBrasiliaHour, macroPercent } from '../../utils/nutrition';
 import { FoodNutrition, FoodPlan, FoodPlanMeal, MacroGoals, MealEntry, NutritionistPatientLink } from '../../types';
 
 import { RingChart, RING_SIZE } from './components/RingChart';
@@ -31,7 +33,13 @@ import { styles } from './styles';
 
 const MEAL_PERIOD_ORDER = ['breakfast', 'snack', 'lunch', 'dinner', 'hydration'];
 
-export function HomeScreen() {
+export function HomeScreen({
+  showHeaderActions = true,
+}: {
+  showHeaderActions?: boolean;
+}) {
+  const { width } = useWindowDimensions();
+  const isDesktopWide = Platform.OS === 'web' && width >= 1100;
   const user = useStore((s) => s.user);
   const profile = useStore((s) => s.profile);
   const clearAuth = useStore((s) => s.clearAuth);
@@ -51,14 +59,15 @@ export function HomeScreen() {
   const [nutritionistInvites, setNutritionistInvites] = useState<NutritionistPatientLink[]>([]);
   const [chatLinks, setChatLinks] = useState<NutritionistPatientLink[]>([]);
   const [foodPlans, setFoodPlans] = useState<FoodPlan[]>([]);
+  const [foodPlansLoading, setFoodPlansLoading] = useState(false);
   const [unreadChatCounts, setUnreadChatCounts] = useState<Record<string, number>>({});
   const [chatLink, setChatLink] = useState<NutritionistPatientLink | null>(null);
   const [completingMealKey, setCompletingMealKey] = useState<string | null>(null);
   const [selectedFoodPlanOptions, setSelectedFoodPlanOptions] = useState<Record<string, string>>({});
   const [openFoodPlanOptionKey, setOpenFoodPlanOptionKey] = useState<string | null>(null);
-  const [skippedFoodPlanMeals, setSkippedFoodPlanMeals] = useState<Record<string, boolean>>({});
-  const [manuallyCompletedFoodPlanMeals, setManuallyCompletedFoodPlanMeals] = useState<Record<string, boolean>>({});
+  const [foodPlanMealStatuses, setFoodPlanMealStatuses] = useState<Record<string, FoodPlanMealStatus>>({});
   const [shoppingPdfOpen, setShoppingPdfOpen] = useState(false);
+  const todayKey = formatDate(new Date());
 
   const totals: FoodNutrition = useMemo(
     () => todayLog?.totalNutrition ?? { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
@@ -89,7 +98,10 @@ export function HomeScreen() {
   ], [safeGoals]);
   const waterMl = todayLog?.waterMl ?? 0;
   const completedFoodPlanMeals = useMemo(() => {
-    const completed: Record<string, boolean> = { ...manuallyCompletedFoodPlanMeals };
+    const completed: Record<string, boolean> = {};
+    Object.values(foodPlanMealStatuses).forEach((item) => {
+      if (item.status === 'completed') completed[item.mealKey] = true;
+    });
     todayLog?.entries.forEach((entry) => {
       if (entry.source !== 'saved' || !entry.savedMealId) return;
       if (entry.mealGroupId?.startsWith(`${entry.savedMealId}_`)) {
@@ -100,7 +112,14 @@ export function HomeScreen() {
       }
     });
     return completed;
-  }, [manuallyCompletedFoodPlanMeals, todayLog?.entries]);
+  }, [foodPlanMealStatuses, todayLog?.entries]);
+  const skippedFoodPlanMeals = useMemo(() => {
+    const skipped: Record<string, boolean> = {};
+    Object.values(foodPlanMealStatuses).forEach((item) => {
+      if (item.status === 'skipped') skipped[item.mealKey] = true;
+    });
+    return skipped;
+  }, [foodPlanMealStatuses]);
 
   useEffect(() => {
     if (!user || user.id === 'dev_user' || !isFirebaseConfigured) {
@@ -129,9 +148,14 @@ export function HomeScreen() {
   useEffect(() => {
     if (!user || user.id === 'dev_user' || !isFirebaseConfigured) {
       setFoodPlans([]);
+      setFoodPlansLoading(false);
       return undefined;
     }
-    return subscribePatientFoodPlans(user.id, setFoodPlans);
+    setFoodPlansLoading(true);
+    return subscribePatientFoodPlans(user.id, (items) => {
+      setFoodPlans(items);
+      setFoodPlansLoading(false);
+    });
   }, [user]);
 
   useEffect(() => {
@@ -141,6 +165,23 @@ export function HomeScreen() {
     }
     return subscribePatientNotifications(user.id, setNotifications);
   }, [setNotifications, user]);
+
+  useEffect(() => {
+    if (!user || user.id === 'dev_user' || !isFirebaseConfigured) {
+      setFoodPlanMealStatuses({});
+      return undefined;
+    }
+    return subscribeFoodPlanMealStatuses(user.id, todayKey, (items) => {
+      setFoodPlanMealStatuses(Object.fromEntries(items.map((item) => [item.mealKey, item])));
+      setSelectedFoodPlanOptions((current) => {
+        const next = { ...current };
+        items.forEach((item) => {
+          if (item.selectedOptionId) next[item.mealKey] = item.selectedOptionId;
+        });
+        return next;
+      });
+    });
+  }, [todayKey, user]);
 
   async function handleRespondNutritionistInvite(linkId: string, status: 'accepted' | 'rejected') {
     try {
@@ -249,6 +290,17 @@ export function HomeScreen() {
   function handleSelectFoodPlanOption(mealKey: string, optionId: string) {
     setSelectedFoodPlanOptions((items) => ({ ...items, [mealKey]: optionId }));
     setOpenFoodPlanOptionKey(null);
+    if (user && user.id !== 'dev_user' && isFirebaseConfigured) {
+      setFoodPlanMealStatus({
+        userId: user.id,
+        date: todayKey,
+        mealKey,
+        status: foodPlanMealStatuses[mealKey]?.status ?? 'pending',
+        selectedOptionId: optionId,
+      }).catch((error) => {
+        console.warn('Failed to save selected food plan option', error);
+      });
+    }
   }
 
   function handleToggleFoodPlanOptions(mealKey: string) {
@@ -256,10 +308,31 @@ export function HomeScreen() {
   }
 
   function handleSkipFoodPlanMeal(mealKey: string) {
-    setSkippedFoodPlanMeals((items) => ({
+    const nextSkipped = !skippedFoodPlanMeals[mealKey];
+    setFoodPlanMealStatuses((items) => ({
       ...items,
-      [mealKey]: !items[mealKey],
+      [mealKey]: {
+        id: items[mealKey]?.id ?? mealKey,
+        userId: user?.id ?? 'local',
+        date: todayKey,
+        mealKey,
+        status: nextSkipped ? 'skipped' : 'pending',
+        selectedOptionId: selectedFoodPlanOptions[mealKey],
+        updatedAt: new Date(),
+      },
     }));
+    if (user && user.id !== 'dev_user' && isFirebaseConfigured) {
+      setFoodPlanMealStatus({
+        userId: user.id,
+        date: todayKey,
+        mealKey,
+        status: nextSkipped ? 'skipped' : 'pending',
+        selectedOptionId: selectedFoodPlanOptions[mealKey],
+      }).catch((error) => {
+        console.warn('Failed to save skipped food plan meal', error);
+        Alert.alert('Erro', 'Não foi possível salvar o status dessa refeição agora.');
+      });
+    }
   }
 
   async function handleCompleteFoodPlanMeal(plan: FoodPlan, meal: FoodPlanMeal, mealIndex: number) {
@@ -273,7 +346,18 @@ export function HomeScreen() {
     const key = makeFoodPlanMealKey(plan.id, meal, mealIndex);
     const mealGroupId = key;
     setCompletingMealKey(key);
-    setManuallyCompletedFoodPlanMeals((items) => ({ ...items, [key]: true }));
+    setFoodPlanMealStatuses((items) => ({
+      ...items,
+      [key]: {
+        id: items[key]?.id ?? key,
+        userId: user.id,
+        date: todayKey,
+        mealKey: key,
+        status: 'completed',
+        selectedOptionId: selectedFoodPlanOptions[key],
+        updatedAt: new Date(),
+      },
+    }));
     try {
       for (const item of items) {
         const payload: Omit<MealEntry, 'id' | 'userId' | 'addedAt'> = {
@@ -293,10 +377,19 @@ export function HomeScreen() {
           : { entry: createLocalFoodPlanEntry(user.id, payload), queued: false };
         addEntry(result.entry);
       }
+      if (isFirebaseConfigured && user.id !== 'dev_user') {
+        await setFoodPlanMealStatus({
+          userId: user.id,
+          date: todayKey,
+          mealKey: key,
+          status: 'completed',
+          selectedOptionId: selectedFoodPlanOptions[key],
+        });
+      }
       Alert.alert('Refeição registrada', 'A refeição recomendada foi adicionada ao seu dia.');
     } catch (error) {
       console.warn('Failed to complete food plan meal', error);
-      setManuallyCompletedFoodPlanMeals((items) => {
+      setFoodPlanMealStatuses((items) => {
         const next = { ...items };
         delete next[key];
         return next;
@@ -315,7 +408,7 @@ export function HomeScreen() {
           <Text style={styles.userName}>{firstName}</Text>
           <Text style={styles.dateLabel}>{today}</Text>
         </View>
-        <View style={styles.headerActions}>
+        {showHeaderActions ? <View style={styles.headerActions}>
           <TouchableOpacity style={styles.helpButton} onPress={openNotifications}>
             <MaterialIcons name="notifications-none" size={21} color={Colors.green600} />
             {unreadCount + nutritionistInvites.length + unreadChatTotal > 0 && <View style={styles.notificationDot} />}
@@ -363,56 +456,74 @@ export function HomeScreen() {
               </TouchableOpacity>
             </View>
           ) : null}
-        </View>
+        </View> : null}
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
-        {/* 1. Anel de calorias + resumo rápido */}
-        <View style={styles.ringSection}>
-          <View style={styles.ringWrap}>
-            <RingChart pct={kcalPct} color={Colors.green400} />
-            <View style={styles.ringCenter}>
-              <Text style={styles.ringKcal}>{formatKcal(totals.kcal)}</Text>
-              <Text style={styles.ringKcalSub}>kcal hoje</Text>
-              <Text style={styles.ringGoal}>de {safeGoals.kcal}</Text>
+        <View style={isDesktopWide ? styles.desktopTopGrid : undefined}>
+          <View style={isDesktopWide ? styles.desktopSummaryColumn : undefined}>
+            {/* 1. Anel de calorias + resumo rápido */}
+            <View style={styles.ringSection}>
+              <View style={styles.ringWrap}>
+                <RingChart pct={kcalPct} color={Colors.green400} />
+                <View style={styles.ringCenter}>
+                  <Text style={styles.ringKcal}>{formatKcal(totals.kcal)}</Text>
+                  <Text style={styles.ringKcalSub}>kcal hoje</Text>
+                  <Text style={styles.ringGoal}>de {safeGoals.kcal}</Text>
+                </View>
+              </View>
+
+              <View style={styles.remainRow}>
+                <View style={styles.remainItem}>
+                  <Text style={styles.remainVal}>{Math.max(0, safeGoals.kcal - Math.round(totals.kcal))}</Text>
+                  <Text style={styles.remainLabel}>kcal restantes</Text>
+                </View>
+                <View style={[styles.remainItem, styles.remainCenter]}>
+                  <Text style={styles.remainVal}>{Math.round(totals.kcal)}</Text>
+                  <Text style={styles.remainLabel}>consumidas</Text>
+                </View>
+                <View style={styles.remainItem}>
+                  <Text style={styles.remainVal}>{waterMl}/{safeGoals.water}</Text>
+                  <Text style={styles.remainLabel}>ml de água</Text>
+                </View>
+              </View>
             </View>
           </View>
 
-          <View style={styles.remainRow}>
-            <View style={styles.remainItem}>
-              <Text style={styles.remainVal}>{Math.max(0, safeGoals.kcal - Math.round(totals.kcal))}</Text>
-              <Text style={styles.remainLabel}>kcal restantes</Text>
-            </View>
-            <View style={[styles.remainItem, styles.remainCenter]}>
-              <Text style={styles.remainVal}>{Math.round(totals.kcal)}</Text>
-              <Text style={styles.remainLabel}>consumidas</Text>
-            </View>
-            <View style={styles.remainItem}>
-              <Text style={styles.remainVal}>{waterMl}/{safeGoals.water}</Text>
-              <Text style={styles.remainLabel}>ml de água</Text>
-            </View>
+          <View style={isDesktopWide ? styles.desktopPlanColumn : undefined}>
+            {/* 2. Plano alimentar (só quando existir) */}
+            {foodPlansLoading && allPlanMeals.length === 0 ? (
+              <View style={styles.foodPlanPanel}>
+                <View style={styles.foodPlanHeader}>
+                  <View style={{ flex: 1 }}>
+                    <SkeletonLine width={88} height={10} />
+                    <SkeletonLine width="62%" height={18} style={{ marginTop: 8 }} />
+                  </View>
+                  <SkeletonLine width={74} height={10} />
+                </View>
+                <SkeletonLine width="86%" height={12} style={{ marginBottom: Spacing.sm }} />
+                <SkeletonBlock height={104} />
+              </View>
+            ) : allPlanMeals.length > 0 && primaryPlan ? (
+              <FoodPlanCard
+                meals={allPlanMeals}
+                planTitle={primaryPlan.title}
+                planNotes={primaryPlan.notes}
+                nutritionistName={primaryPlan.nutritionistName}
+                completingMealKey={completingMealKey}
+                onCompleteMeal={handleCompleteFoodPlanMeal}
+                onOpenShoppingPdf={() => setShoppingPdfOpen(true)}
+                selectedOptions={selectedFoodPlanOptions}
+                openOptionKey={openFoodPlanOptionKey}
+                skippedMealKeys={skippedFoodPlanMeals}
+                completedMealKeys={completedFoodPlanMeals}
+                onSelectOption={handleSelectFoodPlanOption}
+                onToggleOptions={handleToggleFoodPlanOptions}
+                onSkipMeal={handleSkipFoodPlanMeal}
+              />
+            ) : null}
           </View>
         </View>
-
-        {/* 2. Plano alimentar (só quando existir) */}
-        {allPlanMeals.length > 0 && primaryPlan ? (
-          <FoodPlanCard
-            meals={allPlanMeals}
-            planTitle={primaryPlan.title}
-            planNotes={primaryPlan.notes}
-            nutritionistName={primaryPlan.nutritionistName}
-            completingMealKey={completingMealKey}
-            onCompleteMeal={handleCompleteFoodPlanMeal}
-            onOpenShoppingPdf={() => setShoppingPdfOpen(true)}
-            selectedOptions={selectedFoodPlanOptions}
-            openOptionKey={openFoodPlanOptionKey}
-            skippedMealKeys={skippedFoodPlanMeals}
-            completedMealKeys={completedFoodPlanMeals}
-            onSelectOption={handleSelectFoodPlanOption}
-            onToggleOptions={handleToggleFoodPlanOptions}
-            onSkipMeal={handleSkipFoodPlanMeal}
-          />
-        ) : null}
 
         {/* 3. Tabela de metas e nutrientes */}
         <NutritionGoalTable rows={nutritionGoalRows} totals={totals} waterMl={waterMl} />

@@ -49,6 +49,20 @@ function sumEntryWater(entries: MealEntry[]): number {
   return entries.reduce((sum, entry) => sum + (entry.waterMl ?? 0), 0);
 }
 
+function withoutUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => withoutUndefined(item)) as T;
+  }
+  if (value && typeof value === 'object' && !(value instanceof Date)) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .map(([key, item]) => [key, withoutUndefined(item)])
+    ) as T;
+  }
+  return value;
+}
+
 export async function getDailyLog(
   userId: string,
   date: string
@@ -123,6 +137,8 @@ export async function addMealEntry(
     userId,
     addedAt: entry.addedAt ? new Date(entry.addedAt) : new Date(),
   };
+  const cleanEntry = withoutUndefined(newEntry);
+  const cleanGoals = withoutUndefined(goals);
 
   await runTransaction(db, async (transaction) => {
     const existing = await transaction.get(ref);
@@ -133,14 +149,14 @@ export async function addMealEntry(
         id:              logId,
         userId,
         date,
-        entries:         [newEntry],
+        entries:         [cleanEntry],
         totalNutrition:  total,
         waterMl:         newEntry.waterMl ?? 0,
-        goals,
+        goals:           cleanGoals,
         completedGoals:  getCompletedGoals(total, goals),
         updatedAt:       new Date(),
       };
-      transaction.set(ref, { ...log, updatedAt: serverTimestamp() });
+      transaction.set(ref, withoutUndefined({ ...log, updatedAt: serverTimestamp() }));
       return;
     }
 
@@ -148,16 +164,16 @@ export async function addMealEntry(
     const previousEntries = data.entries ?? [];
     const allEntries = previousEntries.some((item) => item.id === newEntry.id)
       ? previousEntries
-      : [...previousEntries, newEntry];
+      : [...previousEntries, cleanEntry];
     const total = sumNutrition(allEntries);
     const legacyWaterMl = Math.max(0, ((data.waterMl ?? 0) as number) - sumEntryWater(previousEntries));
     const waterMl = legacyWaterMl + sumEntryWater(allEntries);
 
     transaction.update(ref, {
-      entries:        allEntries,
+      entries:        withoutUndefined(allEntries),
       totalNutrition: total,
       waterMl,
-      goals,
+      goals:          cleanGoals,
       completedGoals: getCompletedGoals(total, goals),
       updatedAt:      serverTimestamp(),
     });
@@ -185,10 +201,10 @@ export async function removeMealEntry(
     const waterMl = legacyWaterMl + sumEntryWater(allEntries);
 
     transaction.update(ref, {
-      entries:        allEntries,
+      entries:        withoutUndefined(allEntries),
       totalNutrition: total,
       waterMl,
-      goals,
+      goals:          withoutUndefined(goals),
       completedGoals: getCompletedGoals(total, goals),
       updatedAt:      serverTimestamp(),
     });
@@ -213,10 +229,10 @@ export async function updateMealEntry(
     const waterMl = sumEntryWater(allEntries);
 
     transaction.update(ref, {
-      entries: allEntries,
+      entries: withoutUndefined(allEntries),
       totalNutrition: total,
       waterMl,
-      goals,
+      goals: withoutUndefined(goals),
       completedGoals: getCompletedGoals(total, goals),
       updatedAt: serverTimestamp(),
     });
@@ -244,11 +260,11 @@ export async function addWaterIntake(
         entries: [],
         totalNutrition: { kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, sugar: 0 },
         waterMl: amountMl,
-        goals,
+        goals: withoutUndefined(goals),
         completedGoals: [],
         updatedAt: new Date(),
       };
-      transaction.set(ref, { ...log, updatedAt: serverTimestamp() });
+      transaction.set(ref, withoutUndefined({ ...log, updatedAt: serverTimestamp() }));
       nextWaterMl = amountMl;
       return;
     }
@@ -257,7 +273,7 @@ export async function addWaterIntake(
     nextWaterMl = current + amountMl;
     transaction.update(ref, {
       waterMl: nextWaterMl,
-      goals,
+      goals: withoutUndefined(goals),
       updatedAt: serverTimestamp(),
     });
   });
@@ -305,11 +321,11 @@ export async function saveMeal(
     createdAt:  new Date(),
     updatedAt:  new Date(),
   };
-  await setDoc(doc(db, COLLECTIONS.savedMeals, id), {
+  await setDoc(doc(db, COLLECTIONS.savedMeals, id), withoutUndefined({
     ...meal,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  });
+  }));
   return meal;
 }
 

@@ -8,11 +8,13 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Spacing } from '../../constants/theme';
+import { SkeletonBlock, SkeletonLine } from '../../components/Skeleton';
 import { isFirebaseConfigured } from '../../config';
 import {
   addCommunityComment,
@@ -40,15 +42,38 @@ import { styles } from './styles';
 import { PostCard } from './components/PostCard';
 import { CommunityPostModal } from './components/CommunityPostModal';
 
+function CommunityPostSkeleton() {
+  return (
+    <View style={styles.postCard}>
+      <View style={styles.postHeader}>
+        <SkeletonBlock height={42} style={{ width: 42, borderRadius: 21 }} />
+        <View style={{ flex: 1 }}>
+          <SkeletonLine width="48%" height={13} />
+          <SkeletonLine width="34%" height={10} style={{ marginTop: 8 }} />
+        </View>
+        <SkeletonBlock height={34} style={{ width: 34, borderRadius: 17 }} />
+      </View>
+      <SkeletonBlock height={280} style={{ borderRadius: 0, borderLeftWidth: 0, borderRightWidth: 0 }} />
+      <View style={styles.postBody}>
+        <SkeletonLine width="68%" height={14} />
+        <SkeletonLine width="92%" height={10} style={{ marginTop: 9 }} />
+        <SkeletonLine width="54%" height={10} style={{ marginTop: 7 }} />
+      </View>
+    </View>
+  );
+}
+
 export function RankingScreen({
   fabBottomOffset = Spacing.base,
 }: {
   fabBottomOffset?: number;
 }) {
+  const { width } = useWindowDimensions();
   const user = useStore((s) => s.user);
   const profile = useStore((s) => s.profile);
 
   const [posts, setPosts] = useState<CommunityPost[]>([]);
+  const [postsLoading, setPostsLoading] = useState(false);
   const [comments, setComments] = useState<CommunityComment[]>([]);
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [followingIds, setFollowingIds] = useState<string[]>([]);
@@ -63,10 +88,18 @@ export function RankingScreen({
 
   const displayName = profile?.name ?? user?.name ?? 'Usuário';
   const displayNickname = profile?.nickname ?? user?.nickname;
+  const postColumns = width >= 1500 ? 3 : width >= 1040 ? 2 : 1;
 
   useEffect(() => {
-    if (!isFirebaseConfigured || user?.id === 'dev_user') return undefined;
-    return subscribeCommunityPosts(setPosts);
+    if (!isFirebaseConfigured || user?.id === 'dev_user') {
+      setPostsLoading(false);
+      return undefined;
+    }
+    setPostsLoading(true);
+    return subscribeCommunityPosts((items) => {
+      setPosts(items);
+      setPostsLoading(false);
+    });
   }, [user?.id]);
 
   useEffect(() => {
@@ -351,6 +384,9 @@ export function RankingScreen({
       </View>
 
       <FlatList
+        key={`community_${postColumns}`}
+        numColumns={postColumns}
+        columnWrapperStyle={postColumns > 1 ? styles.postGridRow : undefined}
         data={filteredPosts}
         keyExtractor={(item) => item.id}
         showsVerticalScrollIndicator={false}
@@ -387,34 +423,43 @@ export function RankingScreen({
           </View>
         }
         ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <MaterialIcons name="restaurant" size={42} color={Colors.gray400} />
-            <Text style={styles.emptyTitle}>
-              {feedFilter === 'friends' ? 'Nada dos amigos ainda' : 'Nenhum prato publicado ainda'}
-            </Text>
-            <Text style={styles.emptyText}>
-              {feedFilter === 'friends'
-                ? 'Siga usuários no feed geral para montar sua lista de amigos.'
-                : 'As fotos analisadas pela IA aparecerão aqui com nutrientes e comentários.'}
-            </Text>
-          </View>
+          postsLoading ? (
+            <View>
+              <CommunityPostSkeleton />
+              <CommunityPostSkeleton />
+            </View>
+          ) : (
+            <View style={styles.emptyState}>
+              <MaterialIcons name="restaurant" size={42} color={Colors.gray400} />
+              <Text style={styles.emptyTitle}>
+                {feedFilter === 'friends' ? 'Nada dos amigos ainda' : 'Nenhum prato publicado ainda'}
+              </Text>
+              <Text style={styles.emptyText}>
+                {feedFilter === 'friends'
+                  ? 'Siga usuários no feed geral para montar sua lista de amigos.'
+                  : 'As fotos analisadas pela IA aparecerão aqui com nutrientes e comentários.'}
+              </Text>
+            </View>
+          )
         }
         renderItem={({ item: post }) => (
-          <PostCard
-            post={post}
-            comments={commentsByPost.get(post.id) ?? []}
-            commentValue={commentInputs[post.id] ?? ''}
-            isFollowing={followingIds.includes(post.authorId)}
-            isOwnPost={post.authorId === user?.id}
-            onCommentChange={(value) => setCommentInputs((items) => ({ ...items, [post.id]: value }))}
-            onSendComment={() => handleSendComment(post.id)}
-            onToggleFollow={() => handleToggleFollow(post.authorId)}
-            onEditPost={() => {
-              setEditingPost(post);
-              setPhotoModal(true);
-            }}
-            onDeletePost={() => confirmDeletePost(post)}
-          />
+          <View style={postColumns > 1 ? styles.postGridItem : undefined}>
+            <PostCard
+              post={post}
+              comments={commentsByPost.get(post.id) ?? []}
+              commentValue={commentInputs[post.id] ?? ''}
+              isFollowing={followingIds.includes(post.authorId)}
+              isOwnPost={post.authorId === user?.id}
+              onCommentChange={(value) => setCommentInputs((items) => ({ ...items, [post.id]: value }))}
+              onSendComment={() => handleSendComment(post.id)}
+              onToggleFollow={() => handleToggleFollow(post.authorId)}
+              onEditPost={() => {
+                setEditingPost(post);
+                setPhotoModal(true);
+              }}
+              onDeletePost={() => confirmDeletePost(post)}
+            />
+          </View>
         )}
       />
 

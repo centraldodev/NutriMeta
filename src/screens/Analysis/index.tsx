@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   RefreshControl,
   ScrollView,
   Text,
@@ -12,6 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Spacing } from '../../constants/theme';
 import { FoodIcon } from '../../components/FoodIcon';
+import { SkeletonBlock, SkeletonLine } from '../../components/Skeleton';
 import { isFirebaseConfigured } from '../../config';
 import { getRecentDailyLogs } from '../../services/nutritionService';
 import { getCachedRecentDailyLogs } from '../../services/dailyLogStorage';
@@ -36,6 +36,55 @@ import {
 import { StatCard } from './components/StatCard';
 import { NutritionGoalTable } from './components/NutritionGoalTable';
 import { styles } from './styles';
+
+function AnalysisSkeleton({
+  statCardStyle,
+}: {
+  statCardStyle: ViewStyle;
+}) {
+  return (
+    <>
+      <View style={styles.section}>
+        <View style={styles.weekAnalysisHeader}>
+          <View style={{ flex: 1 }}>
+            <SkeletonLine width={140} height={16} />
+            <SkeletonLine width={92} height={10} style={{ marginTop: 8 }} />
+          </View>
+          <SkeletonBlock height={48} style={{ width: 68 }} />
+        </View>
+        <View style={styles.weekSummaryGrid}>
+          {[0, 1, 2, 3].map((item) => (
+            <View key={item} style={[styles.statCard, statCardStyle]}>
+              <SkeletonLine width="58%" height={10} />
+              <SkeletonLine width="78%" height={18} style={{ marginTop: 10 }} />
+              <SkeletonLine width="64%" height={10} style={{ marginTop: 8 }} />
+            </View>
+          ))}
+        </View>
+        <SkeletonLine width={130} height={10} style={{ marginTop: Spacing.sm, marginBottom: Spacing.sm }} />
+        <View style={styles.adherenceGrid}>
+          {[0, 1, 2, 3, 4, 5].map((item) => (
+            <SkeletonBlock key={item} height={68} style={{ width: '31%' }} />
+          ))}
+        </View>
+        <SkeletonLine width={120} height={10} style={{ marginTop: Spacing.md, marginBottom: Spacing.sm }} />
+        <SkeletonBlock height={92} />
+      </View>
+      <View style={styles.nutritionPanel}>
+        <View style={styles.nutritionHeader}>
+          <SkeletonLine width={160} height={16} />
+          <SkeletonLine width={116} height={10} style={{ marginTop: 8 }} />
+        </View>
+        {[0, 1, 2, 3, 4].map((item) => (
+          <View key={item} style={styles.nutritionRow}>
+            <SkeletonLine width="44%" height={12} />
+            <SkeletonLine width="100%" height={6} style={{ marginTop: 10 }} />
+          </View>
+        ))}
+      </View>
+    </>
+  );
+}
 
 export function AnalysisScreen() {
   const user = useStore((s) => s.user);
@@ -138,10 +187,7 @@ export function AnalysisScreen() {
         refreshControl={<RefreshControl refreshing={loading} onRefresh={loadLogs} tintColor={Colors.green400} />}
       >
         {loading && logs.length === 0 ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator color={Colors.green400} />
-            <Text style={styles.emptyText}>Carregando análise...</Text>
-          </View>
+          <AnalysisSkeleton statCardStyle={statCardStyle} />
         ) : mergedLogs.length === 0 ? (
           <View style={styles.emptyBox}>
             <Text style={styles.emptyTitle}>Ainda não há dados suficientes</Text>

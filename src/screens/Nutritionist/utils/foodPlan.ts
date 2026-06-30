@@ -9,6 +9,7 @@ import {
 } from "../../../types";
 import { calculateNutrition, UNIT_LABELS } from "../../../constants/foodDatabase";
 import { EMPTY_TOTAL, PlanMealOptionDraft, PlanSelectedFood } from "../types";
+import { LOCAL_FOODS } from "../../../services/localFoodDatabase";
 
 export function normalizeFoodSearchText(value: string) {
   return value
@@ -72,13 +73,39 @@ export function buildShoppingListFromOptions(
   return options.flatMap((option) => buildShoppingList(option.selectedFoods));
 }
 
+function normalizeFoodLookup(value: string) {
+  return value.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
+function findFoodForMealItem(item: FoodPlanMealItem) {
+  if (item.foodId) {
+    const byId = LOCAL_FOODS.find((f) => f.id === item.foodId);
+    if (byId) return byId;
+  }
+  const normalized = normalizeFoodLookup(item.name);
+  return LOCAL_FOODS.find((f) => normalizeFoodLookup(f.name) === normalized);
+}
+
 export function buildShoppingListFromMeals(meals: FoodPlanMeal[]): ShoppingListItem[] {
   return meals.flatMap((meal) =>
-    meal.items.map((item) => ({
-      name: item.name,
-      quantity: item.quantityValue != null ? String(item.quantityValue) : item.quantity.split(' ')[0] || '1',
-      unit: item.unit ? UNIT_LABELS[item.unit] : item.quantity.split(' ').slice(1).join(' ') || '',
-    })),
+    meal.items.flatMap((item): ShoppingListItem[] => {
+      const food = findFoodForMealItem(item);
+      if (food?.ingredients && food.ingredients.length > 0) {
+        const scale = item.quantityValue != null && item.quantityValue > 0 ? item.quantityValue : 1;
+        return food.ingredients.map((ingredient) => ({
+          name: ingredient.nome,
+          quantity: ingredient.quantidade_g != null
+            ? String(Math.round(ingredient.quantidade_g * scale))
+            : '1',
+          unit: ingredient.quantidade_g != null ? 'g' : '',
+        }));
+      }
+      return [{
+        name: item.name,
+        quantity: item.quantityValue != null ? String(item.quantityValue) : item.quantity.split(' ')[0] || '1',
+        unit: item.unit ? UNIT_LABELS[item.unit] : item.quantity.split(' ').slice(1).join(' ') || '',
+      }];
+    }),
   );
 }
 

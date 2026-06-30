@@ -3,10 +3,10 @@ import { Colors, Radius, Shadows, Spacing, Typography } from '../../constants/th
 
 export const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
-  headerBar: { width: '100%', maxWidth: Platform.OS === 'web' ? 900 : undefined, alignSelf: 'center', backgroundColor: Colors.white, padding: Spacing.base, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  headerBar: { width: '100%', alignSelf: 'center', backgroundColor: Colors.white, padding: Platform.OS === 'web' ? Spacing.xl : Spacing.base, borderBottomWidth: 1, borderBottomColor: Colors.border },
   headerTitle: { fontSize: Typography.lg, fontWeight: Typography.bold },
   headerSub: { fontSize: Typography.xs, color: Colors.gray400, marginTop: 2 },
-  scroll: { width: '100%', maxWidth: Platform.OS === 'web' ? 900 : undefined, alignSelf: 'center', padding: Spacing.base, paddingBottom: 110 },
+  scroll: { width: '100%', alignSelf: 'center', padding: Platform.OS === 'web' ? Spacing.xl : Spacing.base, paddingBottom: 110 },
   loadingBox: { alignItems: 'center', padding: Spacing.xl, gap: Spacing.sm },
   emptyBox: { backgroundColor: Colors.white, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.lg },
   emptyTitle: { fontSize: Typography.md, fontWeight: Typography.bold, marginBottom: Spacing.xs },

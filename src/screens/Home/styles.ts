@@ -111,7 +111,21 @@ export const styles = StyleSheet.create({
     borderColor: Colors.white,
   },
 
-  scroll: { paddingBottom: 100 },
+  scroll: { padding: Platform.OS === 'web' ? Spacing.xl : 0, paddingBottom: 100 },
+  desktopTopGrid: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: Spacing.lg,
+    marginBottom: Spacing.sm,
+  },
+  desktopSummaryColumn: {
+    flex: 0.9,
+    minWidth: 360,
+  },
+  desktopPlanColumn: {
+    flex: 1.35,
+    minWidth: 460,
+  },
   ringSection: { backgroundColor: Colors.white, padding: Spacing.base, marginBottom: Spacing.sm },
   ringWrap: { alignItems: 'center', marginBottom: Spacing.md, position: 'relative' },
   ringCenter: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
@@ -125,7 +139,7 @@ export const styles = StyleSheet.create({
   remainLabel: { fontSize: Typography.xs, color: Colors.gray400 },
 
   foodPlanPanel: {
-    marginHorizontal: Spacing.base,
+    marginHorizontal: Platform.OS === 'web' ? 0 : Spacing.base,
     marginBottom: Spacing.sm,
     backgroundColor: Colors.white,
     borderWidth: 1,
@@ -170,7 +184,7 @@ export const styles = StyleSheet.create({
   shoppingItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingVertical: 5 },
   shoppingText: { flex: 1, fontSize: Typography.sm, color: Colors.gray600 },
   nutritionPanel: {
-    marginHorizontal: Spacing.base,
+    marginHorizontal: Platform.OS === 'web' ? 0 : Spacing.base,
     marginBottom: Spacing.sm,
     backgroundColor: Colors.white,
     borderRadius: Radius.lg,

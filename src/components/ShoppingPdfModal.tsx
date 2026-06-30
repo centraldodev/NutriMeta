@@ -14,8 +14,9 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 
 import { Colors, Radius, Spacing, Typography } from '../constants/theme';
-import { FoodPlan, FoodPlanMeal } from '../types';
+import { FoodPlan, FoodPlanMeal, FoodPlanMealItem } from '../types';
 import { formatBrasiliaDate } from '../utils/nutrition';
+import { LOCAL_FOODS } from '../services/localFoodDatabase';
 
 type ShoppingPdfItem = {
   name: string;
@@ -97,11 +98,38 @@ function formatPurchaseAmount(amount: number, unit: ShoppingPdfItem['unit']) {
   return `${Math.ceil(amount)} un`;
 }
 
+function normalizeLookup(value: string) {
+  return value.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
+function findLocalFoodForItem(item: FoodPlanMealItem) {
+  if (item.foodId) {
+    const byId = LOCAL_FOODS.find((f) => f.id === item.foodId);
+    if (byId) return byId;
+  }
+  const normalized = normalizeLookup(item.name);
+  return LOCAL_FOODS.find((f) => normalizeLookup(f.name) === normalized);
+}
+
+function expandMealItem(item: FoodPlanMealItem): FoodPlanMealItem[] {
+  const food = findLocalFoodForItem(item);
+  if (!food?.ingredients || food.ingredients.length === 0) return [item];
+  const scale = item.quantityValue != null && item.quantityValue > 0 ? item.quantityValue : 1;
+  return food.ingredients.map((ingredient) => ({
+    name: ingredient.nome,
+    quantity: ingredient.quantidade_g != null
+      ? `${Math.round(ingredient.quantidade_g * scale)} g`
+      : item.quantity,
+    quantityValue: ingredient.quantidade_g != null ? ingredient.quantidade_g * scale : undefined,
+    unit: 'grama' as const,
+  }));
+}
+
 function collectFoodPlanItems(plans: FoodPlan[]) {
   return plans.flatMap((plan) => plan.meals).flatMap((meal) => [
     ...meal.items,
     ...(meal.substitutions ?? []).flatMap((option) => option.items),
-  ]);
+  ]).flatMap(expandMealItem);
 }
 
 function buildEstimatedShoppingList(plans: FoodPlan[]): ShoppingPdfItem[] {
